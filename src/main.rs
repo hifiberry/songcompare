@@ -114,12 +114,14 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     
     if args.is_empty() {
-        eprintln!("Usage: songcompare [--normalize_db=VALUE] <audio_file1> <audio_file2> ...");
+        eprintln!("Usage: songcompare [--normalize_db=VALUE] [--allow-resample] [--anonymize] <audio_file1> <audio_file2> ...");
         std::process::exit(1);
     }
     
-    // Parse normalize_db option and filter out file patterns
+    // Parse command line options and filter out file patterns
     let mut normalize_db = -25.0;
+    let mut allow_resample = false;
+    let mut anonymize = false;
     let mut file_patterns = Vec::new();
     
     for arg in &args {
@@ -131,6 +133,10 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        } else if arg == "--allow-resample" {
+            allow_resample = true;
+        } else if arg == "--anonymize" {
+            anonymize = true;
         } else {
             file_patterns.push(arg.clone());
         }
@@ -177,18 +183,24 @@ fn main() {
                     Ok(supported_rates) => {
                         if !supported_rates.contains(&audio.sample_rate) {
                             println!("  Sample rate {} Hz not supported by device", audio.sample_rate);
-                            if let Ok(target_rate) = player::Player::get_highest_sample_rate(audio.channels) {
-                                println!("  Resampling to {} Hz", target_rate);
-                                match processor.resample(&audio.samples, audio.sample_rate, target_rate, audio.channels) {
-                                    Ok(resampled) => {
-                                        audio.samples = resampled;
-                                        audio.sample_rate = target_rate;
-                                        println!("  Resampling complete: {} samples", audio.samples.len());
-                                    }
-                                    Err(e) => {
-                                        eprintln!("  Error resampling: {}", e);
+                            if allow_resample {
+                                if let Ok(target_rate) = player::Player::get_highest_sample_rate(audio.channels) {
+                                    println!("  Resampling to {} Hz", target_rate);
+                                    match processor.resample(&audio.samples, audio.sample_rate, target_rate, audio.channels) {
+                                        Ok(resampled) => {
+                                            audio.samples = resampled;
+                                            audio.sample_rate = target_rate;
+                                            println!("  Resampling complete: {} samples", audio.samples.len());
+                                        }
+                                        Err(e) => {
+                                            eprintln!("  Error resampling: {}", e);
+                                            std::process::exit(1);
+                                        }
                                     }
                                 }
+                            } else {
+                                eprintln!("  Resampling not allowed (use --allow-resample to enable)");
+                                std::process::exit(1);
                             }
                         }
                     }
@@ -212,9 +224,24 @@ fn main() {
         std::process::exit(1);
     }
     
-    // Start playback of the first audio file
-    let first_audio = &audio_files[0];
-    println!("\nStarting playback of: {}", first_audio.filename);
+    // Create random track number mapping if anonymize is enabled
+    let track_mapping: Vec<usize> = if anonymize {
+        let mut indices: Vec<usize> = (0..audio_files.len()).collect();
+        use rand::seq::SliceRandom;
+        indices.shuffle(&mut rand::thread_rng());
+        indices
+    } else {
+        (0..audio_files.len()).collect()
+    };
+    
+    // Start playback of the first audio file (using mapping)
+    let first_index = track_mapping[0];
+    let first_audio = &audio_files[first_index];
+    if !anonymize {
+        println!("\nStarting playback of: {}", first_audio.filename);
+    } else {
+        println!("\nStarting playback of track 1/{}", audio_files.len());
+    }
     
     let player = match player::Player::new(
         first_audio.samples.clone(),
@@ -234,7 +261,7 @@ fn main() {
     // Display progress indicator and handle keyboard input
     print!("\r");
     let mut should_exit = false;
-    let mut current_song_index = 0;
+    let mut display_index = 0; // This is the displayed track number (1-based internally as 0-based)
     let mut is_paused = false;
     let mut last_key_time = Instant::now();
     let key_debounce = Duration::from_millis(200);
@@ -247,8 +274,9 @@ fn main() {
             should_exit = true;
         }
         
-        // Get current audio info for display
-        let current_audio = &audio_files[current_song_index];
+        // Get current audio info using the mapping
+        let actual_index = track_mapping[display_index];
+        let current_audio = &audio_files[actual_index];
         
         // Calculate time in seconds
         let position_seconds = status.position_samples as f32 / (status.sample_rate * current_audio.channels as u32) as f32;
@@ -261,8 +289,13 @@ fn main() {
         
         let pause_indicator = if is_paused { "[PAUSED] " } else { "" };
         
-        print!("\r{}Track {}/{}: {:02}:{:02}/{:02}:{:02} [ESC: Exit, SPACE: Pause, ←→: Skip, ↑↓: Prev/Next, ENTER: Random]  ", 
-            pause_indicator, current_song_index + 1, audio_files.len(), pos_min, pos_sec, total_min, total_sec);
+        if !anonymize {
+            print!("\r{}Track {}/{}: {} - {:02}:{:02}/{:02}:{:02} [ESC: Exit, SPACE: Pause, ←→: Skip, ↑↓: Prev/Next, ENTER: Random]  ", 
+                pause_indicator, display_index + 1, audio_files.len(), current_audio.filename, pos_min, pos_sec, total_min, total_sec);
+        } else {
+            print!("\r{}Track {}/{}: {:02}:{:02}/{:02}:{:02} [ESC: Exit, SPACE: Pause, ←→: Skip, ↑↓: Prev/Next, ENTER: Random]  ", 
+                pause_indicator, display_index + 1, audio_files.len(), pos_min, pos_sec, total_min, total_sec);
+        }
         std::io::stdout().flush().unwrap();
         
         // Check for keyboard events (non-blocking)
@@ -295,16 +328,27 @@ fn main() {
                                 }
                             }
                             KeyCode::Enter => {
-                                // Switch to random song
-                                let mut rng = rand::thread_rng();
-                                let random_index = rng.gen_range(0..audio_files.len());
-                                current_song_index = random_index;
-                                let random_audio = &audio_files[random_index];
-                                println!("\r\nSwitching to random: {}                                ", random_audio.filename);
-                                player.switch_source(random_audio.samples.clone(), random_audio.sample_rate);
-                                if is_paused {
-                                    is_paused = false;
-                                    player.resume();
+                                // Switch to random song (different from current)
+                                if audio_files.len() > 1 {
+                                    let mut rng = rand::thread_rng();
+                                    let mut random_display_index = rng.gen_range(0..audio_files.len());
+                                    // Ensure we pick a different song
+                                    while random_display_index == display_index {
+                                        random_display_index = rng.gen_range(0..audio_files.len());
+                                    }
+                                    display_index = random_display_index;
+                                    let random_actual_index = track_mapping[random_display_index];
+                                    let random_audio = &audio_files[random_actual_index];
+                                    if !anonymize {
+                                        println!("\r\nSwitching to random: {}                                ", random_audio.filename);
+                                    } else {
+                                        println!("\r\nSwitching to random track {}/{}                                ", random_display_index + 1, audio_files.len());
+                                    }
+                                    player.switch_source(random_audio.samples.clone(), random_audio.sample_rate);
+                                    if is_paused {
+                                        is_paused = false;
+                                        player.resume();
+                                    }
                                 }
                             }
                             KeyCode::Left => {
@@ -319,20 +363,30 @@ fn main() {
                             }
                             KeyCode::Up => {
                                 // Next song (wrap around to first)
-                                current_song_index = (current_song_index + 1) % audio_files.len();
-                                let next_audio = &audio_files[current_song_index];
-                                println!("\r\nSwitching to: {}                                ", next_audio.filename);
+                                display_index = (display_index + 1) % audio_files.len();
+                                let next_actual_index = track_mapping[display_index];
+                                let next_audio = &audio_files[next_actual_index];
+                                if !anonymize {
+                                    println!("\r\nSwitching to: {}                                ", next_audio.filename);
+                                } else {
+                                    println!("\r\nSwitching to track {}/{}                                ", display_index + 1, audio_files.len());
+                                }
                                 player.switch_source(next_audio.samples.clone(), next_audio.sample_rate);
                             }
                             KeyCode::Down => {
                                 // Previous song (wrap around to last)
-                                current_song_index = if current_song_index == 0 {
+                                display_index = if display_index == 0 {
                                     audio_files.len() - 1
                                 } else {
-                                    current_song_index - 1
+                                    display_index - 1
                                 };
-                                let prev_audio = &audio_files[current_song_index];
-                                println!("\r\nSwitching to: {}                                ", prev_audio.filename);
+                                let prev_actual_index = track_mapping[display_index];
+                                let prev_audio = &audio_files[prev_actual_index];
+                                if !anonymize {
+                                    println!("\r\nSwitching to: {}                                ", prev_audio.filename);
+                                } else {
+                                    println!("\r\nSwitching to track {}/{}                                ", display_index + 1, audio_files.len());
+                                }
                                 player.switch_source(prev_audio.samples.clone(), prev_audio.sample_rate);
                             }
                             _ => {}
@@ -351,4 +405,13 @@ fn main() {
     
     // Disable raw mode before exiting
     disable_raw_mode().unwrap();
+    
+    // Show track listing if anonymize was enabled
+    if anonymize {
+        println!("\n\nTrack Listing:");
+        for display_idx in 0..audio_files.len() {
+            let actual_idx = track_mapping[display_idx];
+            println!("  Track {}: {}", display_idx + 1, audio_files[actual_idx].filename);
+        }
+    }
 }
