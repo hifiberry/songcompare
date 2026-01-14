@@ -114,12 +114,13 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     
     if args.is_empty() {
-        eprintln!("Usage: songcompare [--normalize_db=VALUE] [--allow-resample] [--anonymize] <audio_file1> <audio_file2> ...");
+        eprintln!("Usage: songcompare [--normalize_db=VALUE] [--no-normalisation] [--allow-resample] [--anonymize] <audio_file1> <audio_file2> ...");
         std::process::exit(1);
     }
     
     // Parse command line options and filter out file patterns
     let mut normalize_db = -25.0;
+    let mut no_normalisation = false;
     let mut allow_resample = false;
     let mut anonymize = false;
     let mut file_patterns = Vec::new();
@@ -133,6 +134,8 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        } else if arg == "--no-normalisation" {
+            no_normalisation = true;
         } else if arg == "--allow-resample" {
             allow_resample = true;
         } else if arg == "--anonymize" {
@@ -152,7 +155,11 @@ fn main() {
     let mut audio_files = Vec::new();
     let processor = processor::Processor::new();
     
-    println!("Normalizing audio files to {} dB RMS\n", normalize_db);
+    if !no_normalisation {
+        println!("Normalizing audio files to {} dB RMS\n", normalize_db);
+    } else {
+        println!("Skipping normalization\n");
+    }
     
     for path in &file_paths {
         match read_audio_file(path) {
@@ -168,15 +175,17 @@ fn main() {
                     max_level, max_db, rms_level, rms_db);
                 
                 // Normalize the audio
-                audio.samples = processor.normalize_to_rms_db(&audio.samples, normalize_db);
-                
-                let max_level_after = processor.calculate_max_level(&audio.samples);
-                let rms_level_after = processor.calculate_rms_level(&audio.samples);
-                let max_db_after = processor::Processor::level_to_db(max_level_after);
-                let rms_db_after = processor::Processor::level_to_db(rms_level_after);
-                
-                println!("  After:  Max level: {:.6} ({:.2} dB), RMS level: {:.6} ({:.2} dB)", 
-                    max_level_after, max_db_after, rms_level_after, rms_db_after);
+                if !no_normalisation {
+                    audio.samples = processor.normalize_to_rms_db(&audio.samples, normalize_db);
+                    
+                    let max_level_after = processor.calculate_max_level(&audio.samples);
+                    let rms_level_after = processor.calculate_rms_level(&audio.samples);
+                    let max_db_after = processor::Processor::level_to_db(max_level_after);
+                    let rms_db_after = processor::Processor::level_to_db(rms_level_after);
+                    
+                    println!("  After:  Max level: {:.6} ({:.2} dB), RMS level: {:.6} ({:.2} dB)", 
+                        max_level_after, max_db_after, rms_level_after, rms_db_after);
+                }
                 
                 // Check if resampling is needed
                 match player::Player::get_supported_sample_rates(audio.channels) {
