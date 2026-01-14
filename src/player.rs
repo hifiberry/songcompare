@@ -1,6 +1,6 @@
 // Audio player module
 
-use rodio::{OutputStream, Sink};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -8,6 +8,7 @@ use std::time::Duration;
 
 pub enum PlayerCommand {
     Stop,
+    Seek(i64), // Seek by number of samples (positive = forward, negative = backward)
 }
 
 pub struct PlayerStatus {
@@ -17,11 +18,84 @@ pub struct PlayerStatus {
     pub is_playing: bool,
 }
 
+struct PlaybackState {
+    samples: Vec<f32>,
+    position: usize,
+    _channels: usize,
+    is_playing: bool,
+    ring_buffer: Vec<f32>,
+    ring_buffer_read_pos: usize,
+    ring_buffer_write_pos: usize,
+    ring_buffer_size: usize,
+}
+
+impl PlaybackState {
+    fn new(samples: Vec<f32>, channels: usize, sample_rate: u32) -> Self {
+        // Ring buffer size: 1 second of audio
+        let ring_buffer_size = sample_rate as usize * channels;
+        
+        PlaybackState {
+            samples,
+            position: 0,
+            _channels: channels,
+            is_playing: true,
+            ring_buffer: vec![0.0; ring_buffer_size],
+            ring_buffer_read_pos: 0,
+            ring_buffer_write_pos: 0,
+            ring_buffer_size,
+        }
+    }
+    
+    fn fill_buffer(&mut self) {
+        // Fill the ring buffer from source
+        while self.ring_buffer_write_pos < self.ring_buffer_size && self.position < self.samples.len() {
+            self.ring_buffer[self.ring_buffer_write_pos] = self.samples[self.position];
+            self.ring_buffer_write_pos += 1;
+            self.position += 1;
+        }
+    }
+    
+    fn read_sample(&mut self) -> f32 {
+        if self.ring_buffer_read_pos >= self.ring_buffer_write_pos {
+            // Buffer empty, fill it
+            self.ring_buffer_write_pos = 0;
+            self.ring_buffer_read_pos = 0;
+            self.fill_buffer();
+        }
+        
+        if self.ring_buffer_read_pos < self.ring_buffer_write_pos {
+            let sample = self.ring_buffer[self.ring_buffer_read_pos];
+            self.ring_buffer_read_pos += 1;
+            sample
+        } else {
+            // No more data
+            self.is_playing = false;
+            0.0
+        }
+    }
+    
+    fn seek(&mut self, offset: i64) {
+        let new_pos = (self.position as i64 + offset - (self.ring_buffer_write_pos as i64 - self.ring_buffer_read_pos as i64))
+            .max(0)
+            .min(self.samples.len() as i64) as usize;
+        
+        self.position = new_pos;
+        self.ring_buffer_read_pos = 0;
+        self.ring_buffer_write_pos = 0;
+        self.fill_buffer();
+    }
+    
+    fn get_position(&self) -> usize {
+        // Actual position is the source position minus buffered data
+        self.position.saturating_sub(self.ring_buffer_write_pos - self.ring_buffer_read_pos)
+    }
+}
+
 pub struct Player {
     command_tx: Sender<PlayerCommand>,
     status: Arc<Mutex<PlayerStatus>>,
     thread_handle: Option<thread::JoinHandle<()>>,
-    _stream: OutputStream, // Keep stream alive
+    _stream: cpal::Stream, // Keep stream alive
 }
 
 impl Player {
@@ -37,13 +111,88 @@ impl Player {
         
         let status_clone = Arc::clone(&status);
         
-        // Create the audio stream - keep it in the Player struct so it stays alive
-        let (stream, stream_handle) = OutputStream::try_default()?;
+        // Create the audio stream
+        println!("\nAvailable audio hosts:");
+        for host_id in cpal::available_hosts() {
+            println!("  {:?}", host_id);
+        }
+        
+        let host = cpal::default_host();
+        println!("Using host: {:?}", host.id());
+        
+        let device = host.default_output_device().ok_or("No output device available")?;
+        println!("Using device: {:?}", device.name());
+        
+        // Get supported configs
+        let supported_configs: Vec<_> = device.supported_output_configs()?.collect();
+        
+        let desired_sample_rate = cpal::SampleRate(sample_rate);
+        let desired_channels = channels as u16;
+        
+        println!("\nRequested: {} Hz, {} channels", sample_rate, channels);
+        println!("Supported configurations:");
+        for config in &supported_configs {
+            println!("  {} channels: {} Hz - {} Hz (sample format: {:?})", 
+                config.channels(),
+                config.min_sample_rate().0,
+                config.max_sample_rate().0,
+                config.sample_format()
+            );
+        }
+        
+        // Find a config that supports our sample rate and channels
+        let matching_config = supported_configs
+            .iter()
+            .find(|config| {
+                config.min_sample_rate() <= desired_sample_rate 
+                    && config.max_sample_rate() >= desired_sample_rate
+                    && config.channels() == desired_channels
+                    && config.sample_format() == cpal::SampleFormat::F32
+            });
+        
+        let actual_sample_rate;
+        let actual_channels;
+        
+        if let Some(_config) = matching_config {
+            // Use the requested config
+            actual_sample_rate = sample_rate;
+            actual_channels = desired_channels;
+            println!("Using exact match: {} Hz, {} channels", actual_sample_rate, actual_channels);
+        } else {
+            // Fall back to device default
+            println!("No exact match found, using device default config");
+            let default_config = device.default_output_config()?;
+            actual_sample_rate = default_config.sample_rate().0;
+            actual_channels = default_config.channels();
+            println!("Using: {} Hz, {} channels (NOTE: This may cause pitch/speed issues!)", actual_sample_rate, actual_channels);
+        }
+        
+        // Create config
+        let config = cpal::StreamConfig {
+            channels: actual_channels,
+            sample_rate: cpal::SampleRate(actual_sample_rate),
+            buffer_size: cpal::BufferSize::Default,
+        };
+        
+        let playback_state = Arc::new(Mutex::new(PlaybackState::new(samples.clone(), channels, sample_rate)));
+        let playback_state_clone = Arc::clone(&playback_state);
+        
+        let stream = device.build_output_stream(
+            &config,
+            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                let mut state = playback_state_clone.lock().unwrap();
+                for sample in data.iter_mut() {
+                    *sample = state.read_sample();
+                }
+            },
+            |err| eprintln!("Stream error: {}", err),
+            None,
+        )?;
+        
+        stream.play()?;
         
         let thread_handle = thread::spawn(move || {
-            if let Err(e) = Self::playback_thread(samples, sample_rate, channels, command_rx, status_clone, stream_handle) {
-                eprintln!("Playback error: {}", e);
-            }
+            Self::command_thread(command_rx, playback_state, status_clone);
         });
         
         Ok(Player {
@@ -54,59 +203,43 @@ impl Player {
         })
     }
     
-    fn playback_thread(
-        samples: Vec<f32>,
-        sample_rate: u32,
-        channels: usize,
+    fn command_thread(
         command_rx: Receiver<PlayerCommand>,
+        playback_state: Arc<Mutex<PlaybackState>>,
         status: Arc<Mutex<PlayerStatus>>,
-        stream_handle: rodio::OutputStreamHandle,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let sink = Sink::try_new(&stream_handle)?;
-        
-        // Create a rodio source from our samples
-        let source = rodio::buffer::SamplesBuffer::new(channels as u16, sample_rate, samples.clone());
-        sink.append(source);
-        
-        // Monitor playback progress
-        let update_interval = Duration::from_millis(100);
-        let samples_per_update = (sample_rate as f64 * update_interval.as_secs_f64()) as usize * channels;
-        let mut position = 0;
-        
+    ) {
         loop {
+            // Update status
+            {
+                let state = playback_state.lock().unwrap();
+                let mut status = status.lock().unwrap();
+                status.position_samples = state.get_position();
+                status.is_playing = state.is_playing;
+                
+                if !state.is_playing {
+                    break;
+                }
+            }
+            
             // Check for commands
             if let Ok(cmd) = command_rx.try_recv() {
                 match cmd {
                     PlayerCommand::Stop => {
-                        sink.stop();
+                        let mut state = playback_state.lock().unwrap();
+                        state.is_playing = false;
+                        let mut status = status.lock().unwrap();
+                        status.is_playing = false;
                         break;
+                    }
+                    PlayerCommand::Seek(sample_offset) => {
+                        let mut state = playback_state.lock().unwrap();
+                        state.seek(sample_offset);
                     }
                 }
             }
             
-            // Check if playback is finished
-            if sink.empty() {
-                if let Ok(mut status) = status.lock() {
-                    status.is_playing = false;
-                    status.position_samples = samples.len();
-                }
-                break;
-            }
-            
-            // Update position
-            position += samples_per_update;
-            if position > samples.len() {
-                position = samples.len();
-            }
-            
-            if let Ok(mut status) = status.lock() {
-                status.position_samples = position;
-            }
-            
-            thread::sleep(update_interval);
+            thread::sleep(Duration::from_millis(50));
         }
-        
-        Ok(())
     }
     
     pub fn get_status(&self) -> PlayerStatus {
@@ -115,6 +248,10 @@ impl Player {
     
     pub fn stop(&self) {
         let _ = self.command_tx.send(PlayerCommand::Stop);
+    }
+    
+    pub fn seek(&self, sample_offset: i64) {
+        let _ = self.command_tx.send(PlayerCommand::Seek(sample_offset));
     }
 }
 

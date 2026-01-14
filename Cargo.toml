@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 symphonia = "0.5"
 glob = "0.3"
-rodio = "0.19"
+cpal = "0.15"
+crossterm = "0.28"

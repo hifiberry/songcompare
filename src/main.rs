@@ -5,7 +5,12 @@ use std::env;
 use std::fs::File;
 use std::thread;
 use std::time::Duration;
+use std::io::Write;
 use glob::glob;
+use crossterm::{
+    event::{self, Event, KeyCode},
+    terminal::{enable_raw_mode, disable_raw_mode},
+};
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
@@ -197,14 +202,19 @@ fn main() {
         }
     };
     
-    // Display progress indicator
+    // Enable raw mode for keyboard input
+    enable_raw_mode().unwrap();
+    
+    // Display progress indicator and handle keyboard input
     print!("\r");
+    let mut should_exit = false;
+    
     loop {
         let status = player.get_status();
         
         if !status.is_playing {
             println!("\r\nPlayback finished");
-            break;
+            should_exit = true;
         }
         
         // Calculate time in seconds
@@ -216,10 +226,40 @@ fn main() {
         let total_min = (total_seconds / 60.0) as u32;
         let total_sec = (total_seconds % 60.0) as u32;
         
-        print!("\rProgress: {:02}:{:02}/{:02}:{:02}  ", pos_min, pos_sec, total_min, total_sec);
-        use std::io::Write;
+        print!("\rProgress: {:02}:{:02}/{:02}:{:02} [ESC: Exit, Left/Right: Skip ±5s]  ", pos_min, pos_sec, total_min, total_sec);
         std::io::stdout().flush().unwrap();
         
-        thread::sleep(Duration::from_millis(500));
+        // Check for keyboard events (non-blocking)
+        if event::poll(Duration::from_millis(100)).unwrap() {
+            if let Event::Key(key_event) = event::read().unwrap() {
+                match key_event.code {
+                    KeyCode::Esc => {
+                        println!("\r\nExiting...");
+                        player.stop();
+                        should_exit = true;
+                    }
+                    KeyCode::Left => {
+                        // Skip backward 5 seconds
+                        let skip_samples = (5.0 * status.sample_rate as f32 * first_audio.channels as f32) as i64;
+                        player.seek(-skip_samples);
+                    }
+                    KeyCode::Right => {
+                        // Skip forward 5 seconds
+                        let skip_samples = (5.0 * status.sample_rate as f32 * first_audio.channels as f32) as i64;
+                        player.seek(skip_samples);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        if should_exit {
+            break;
+        }
+        
+        thread::sleep(Duration::from_millis(400));
     }
+    
+    // Disable raw mode before exiting
+    disable_raw_mode().unwrap();
 }
