@@ -3,6 +3,8 @@ mod player;
 
 use std::env;
 use std::fs::File;
+use std::thread;
+use std::time::Duration;
 use glob::glob;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::formats::FormatOptions;
@@ -173,4 +175,51 @@ fn main() {
     }
     
     println!("\nLoaded {} audio file(s) into memory", audio_files.len());
+    
+    if audio_files.is_empty() {
+        eprintln!("No audio files to play");
+        std::process::exit(1);
+    }
+    
+    // Start playback of the first audio file
+    let first_audio = &audio_files[0];
+    println!("\nStarting playback of: {}", first_audio.filename);
+    
+    let player = match player::Player::new(
+        first_audio.samples.clone(),
+        first_audio.sample_rate,
+        first_audio.channels,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Failed to create player: {}", e);
+            std::process::exit(1);
+        }
+    };
+    
+    // Display progress indicator
+    print!("\r");
+    loop {
+        let status = player.get_status();
+        
+        if !status.is_playing {
+            println!("\r\nPlayback finished");
+            break;
+        }
+        
+        // Calculate time in seconds
+        let position_seconds = status.position_samples as f32 / (status.sample_rate * first_audio.channels as u32) as f32;
+        let total_seconds = status.total_samples as f32 / (status.sample_rate * first_audio.channels as u32) as f32;
+        
+        let pos_min = (position_seconds / 60.0) as u32;
+        let pos_sec = (position_seconds % 60.0) as u32;
+        let total_min = (total_seconds / 60.0) as u32;
+        let total_sec = (total_seconds % 60.0) as u32;
+        
+        print!("\rProgress: {:02}:{:02}/{:02}:{:02}  ", pos_min, pos_sec, total_min, total_sec);
+        use std::io::Write;
+        std::io::stdout().flush().unwrap();
+        
+        thread::sleep(Duration::from_millis(500));
+    }
 }
