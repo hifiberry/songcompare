@@ -12,6 +12,8 @@ pub enum PlayerCommand {
     Stop,
     Seek(i64), // Seek by number of samples (positive = forward, negative = backward)
     SwitchSource(Vec<f32>, u32), // Switch to new audio source (samples, sample_rate)
+    Pause,
+    Resume,
 }
 
 pub struct PlayerStatus {
@@ -33,6 +35,7 @@ struct PlaybackState {
     position: usize,
     _channels: usize,
     is_playing: bool,
+    is_paused: bool,
     ring_buffer: Vec<f32>,
     ring_buffer_read_pos: usize,
     ring_buffer_write_pos: usize,
@@ -55,6 +58,7 @@ impl PlaybackState {
             position: 0,
             _channels: channels,
             is_playing: true,
+            is_paused: false,
             ring_buffer: vec![0.0; ring_buffer_size],
             ring_buffer_read_pos: 0,
             ring_buffer_write_pos: 0,
@@ -132,6 +136,11 @@ impl PlaybackState {
     }
     
     fn read_sample(&mut self) -> f32 {
+        // Return silence when paused
+        if self.is_paused {
+            return 0.0;
+        }
+        
         if self.ring_buffer_read_pos >= self.ring_buffer_write_pos {
             // Buffer empty, fill it
             self.ring_buffer_write_pos = 0;
@@ -325,6 +334,14 @@ impl Player {
                         let mut state = playback_state.lock().unwrap();
                         state.switch_source(new_samples, new_sample_rate);
                     }
+                    PlayerCommand::Pause => {
+                        let mut state = playback_state.lock().unwrap();
+                        state.is_paused = true;
+                    }
+                    PlayerCommand::Resume => {
+                        let mut state = playback_state.lock().unwrap();
+                        state.is_paused = false;
+                    }
                 }
             }
             
@@ -338,6 +355,14 @@ impl Player {
     
     pub fn stop(&self) {
         let _ = self.command_tx.send(PlayerCommand::Stop);
+    }
+    
+    pub fn pause(&self) {
+        let _ = self.command_tx.send(PlayerCommand::Pause);
+    }
+    
+    pub fn resume(&self) {
+        let _ = self.command_tx.send(PlayerCommand::Resume);
     }
     
     pub fn seek(&self, sample_offset: i64) {

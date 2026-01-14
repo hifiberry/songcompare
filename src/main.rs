@@ -4,11 +4,12 @@ mod player;
 use std::env;
 use std::fs::File;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::io::Write;
 use glob::glob;
+use rand::Rng;
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyEventKind},
     terminal::{enable_raw_mode, disable_raw_mode},
 };
 use symphonia::core::codecs::DecoderOptions;
@@ -234,6 +235,9 @@ fn main() {
     print!("\r");
     let mut should_exit = false;
     let mut current_song_index = 0;
+    let mut is_paused = false;
+    let mut last_key_time = Instant::now();
+    let key_debounce = Duration::from_millis(200);
     
     loop {
         let status = player.get_status();
@@ -255,48 +259,85 @@ fn main() {
         let total_min = (total_seconds / 60.0) as u32;
         let total_sec = (total_seconds % 60.0) as u32;
         
-        print!("\rTrack {}/{}: {:02}:{:02}/{:02}:{:02} [ESC: Exit, ←→: Skip ±5s, ↑↓: Next/Prev]  ", 
-            current_song_index + 1, audio_files.len(), pos_min, pos_sec, total_min, total_sec);
+        let pause_indicator = if is_paused { "[PAUSED] " } else { "" };
+        
+        print!("\r{}Track {}/{}: {:02}:{:02}/{:02}:{:02} [ESC: Exit, SPACE: Pause, ←→: Skip, ↑↓: Prev/Next, ENTER: Random]  ", 
+            pause_indicator, current_song_index + 1, audio_files.len(), pos_min, pos_sec, total_min, total_sec);
         std::io::stdout().flush().unwrap();
         
         // Check for keyboard events (non-blocking)
         if event::poll(Duration::from_millis(100)).unwrap() {
             if let Event::Key(key_event) = event::read().unwrap() {
-                match key_event.code {
-                    KeyCode::Esc => {
-                        println!("\r\nExiting...");
-                        player.stop();
-                        should_exit = true;
+                // Only process KeyPress events, ignore KeyRepeat and KeyRelease
+                if key_event.kind == KeyEventKind::Press {
+                    // Debounce for navigation keys
+                    let now = Instant::now();
+                    let needs_debounce = matches!(key_event.code, KeyCode::Up | KeyCode::Down | KeyCode::Enter);
+                    
+                    if !needs_debounce || now.duration_since(last_key_time) >= key_debounce {
+                        if needs_debounce {
+                            last_key_time = now;
+                        }
+                        
+                        match key_event.code {
+                            KeyCode::Esc => {
+                                println!("\r\nExiting...");
+                                player.stop();
+                                should_exit = true;
+                            }
+                            KeyCode::Char(' ') => {
+                                // Toggle pause/resume
+                                is_paused = !is_paused;
+                                if is_paused {
+                                    player.pause();
+                                } else {
+                                    player.resume();
+                                }
+                            }
+                            KeyCode::Enter => {
+                                // Switch to random song
+                                let mut rng = rand::thread_rng();
+                                let random_index = rng.gen_range(0..audio_files.len());
+                                current_song_index = random_index;
+                                let random_audio = &audio_files[random_index];
+                                println!("\r\nSwitching to random: {}                                ", random_audio.filename);
+                                player.switch_source(random_audio.samples.clone(), random_audio.sample_rate);
+                                if is_paused {
+                                    is_paused = false;
+                                    player.resume();
+                                }
+                            }
+                            KeyCode::Left => {
+                                // Skip backward 5 seconds
+                                let skip_samples = (5.0 * status.sample_rate as f32 * current_audio.channels as f32) as i64;
+                                player.seek(-skip_samples);
+                            }
+                            KeyCode::Right => {
+                                // Skip forward 5 seconds
+                                let skip_samples = (5.0 * status.sample_rate as f32 * current_audio.channels as f32) as i64;
+                                player.seek(skip_samples);
+                            }
+                            KeyCode::Up => {
+                                // Next song (wrap around to first)
+                                current_song_index = (current_song_index + 1) % audio_files.len();
+                                let next_audio = &audio_files[current_song_index];
+                                println!("\r\nSwitching to: {}                                ", next_audio.filename);
+                                player.switch_source(next_audio.samples.clone(), next_audio.sample_rate);
+                            }
+                            KeyCode::Down => {
+                                // Previous song (wrap around to last)
+                                current_song_index = if current_song_index == 0 {
+                                    audio_files.len() - 1
+                                } else {
+                                    current_song_index - 1
+                                };
+                                let prev_audio = &audio_files[current_song_index];
+                                println!("\r\nSwitching to: {}                                ", prev_audio.filename);
+                                player.switch_source(prev_audio.samples.clone(), prev_audio.sample_rate);
+                            }
+                            _ => {}
+                        }
                     }
-                    KeyCode::Left => {
-                        // Skip backward 5 seconds
-                        let skip_samples = (5.0 * status.sample_rate as f32 * current_audio.channels as f32) as i64;
-                        player.seek(-skip_samples);
-                    }
-                    KeyCode::Right => {
-                        // Skip forward 5 seconds
-                        let skip_samples = (5.0 * status.sample_rate as f32 * current_audio.channels as f32) as i64;
-                        player.seek(skip_samples);
-                    }
-                    KeyCode::Up => {
-                        // Next song (wrap around to first)
-                        current_song_index = (current_song_index + 1) % audio_files.len();
-                        let next_audio = &audio_files[current_song_index];
-                        println!("\r\nSwitching to: {}                                ", next_audio.filename);
-                        player.switch_source(next_audio.samples.clone(), next_audio.sample_rate);
-                    }
-                    KeyCode::Down => {
-                        // Previous song (wrap around to last)
-                        current_song_index = if current_song_index == 0 {
-                            audio_files.len() - 1
-                        } else {
-                            current_song_index - 1
-                        };
-                        let prev_audio = &audio_files[current_song_index];
-                        println!("\r\nSwitching to: {}                                ", prev_audio.filename);
-                        player.switch_source(prev_audio.samples.clone(), prev_audio.sample_rate);
-                    }
-                    _ => {}
                 }
             }
         }
