@@ -253,6 +253,41 @@ impl Player {
     pub fn seek(&self, sample_offset: i64) {
         let _ = self.command_tx.send(PlayerCommand::Seek(sample_offset));
     }
+    
+    /// Get supported sample rates for the given number of channels
+    pub fn get_supported_sample_rates(channels: usize) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        let host = cpal::default_host();
+        let device = host.default_output_device().ok_or("No output device available")?;
+        
+        let supported_configs: Vec<_> = device.supported_output_configs()?.collect();
+        let desired_channels = channels as u16;
+        
+        let mut sample_rates = Vec::new();
+        
+        for config in supported_configs {
+            if config.channels() == desired_channels && config.sample_format() == cpal::SampleFormat::F32 {
+                // Add common sample rates within the supported range
+                let common_rates = [8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000];
+                for &rate in &common_rates {
+                    let rate_cpal = cpal::SampleRate(rate);
+                    if config.min_sample_rate() <= rate_cpal && config.max_sample_rate() >= rate_cpal {
+                        if !sample_rates.contains(&rate) {
+                            sample_rates.push(rate);
+                        }
+                    }
+                }
+            }
+        }
+        
+        sample_rates.sort();
+        Ok(sample_rates)
+    }
+    
+    /// Get the highest supported sample rate for the given number of channels
+    pub fn get_highest_sample_rate(channels: usize) -> Result<u32, Box<dyn std::error::Error>> {
+        let rates = Self::get_supported_sample_rates(channels)?;
+        rates.last().copied().ok_or("No supported sample rates found".into())
+    }
 }
 
 impl Clone for PlayerStatus {

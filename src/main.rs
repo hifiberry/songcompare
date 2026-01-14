@@ -171,6 +171,31 @@ fn main() {
                 println!("  After:  Max level: {:.6} ({:.2} dB), RMS level: {:.6} ({:.2} dB)", 
                     max_level_after, max_db_after, rms_level_after, rms_db_after);
                 
+                // Check if resampling is needed
+                match player::Player::get_supported_sample_rates(audio.channels) {
+                    Ok(supported_rates) => {
+                        if !supported_rates.contains(&audio.sample_rate) {
+                            println!("  Sample rate {} Hz not supported by device", audio.sample_rate);
+                            if let Ok(target_rate) = player::Player::get_highest_sample_rate(audio.channels) {
+                                println!("  Resampling to {} Hz", target_rate);
+                                match processor.resample(&audio.samples, audio.sample_rate, target_rate, audio.channels) {
+                                    Ok(resampled) => {
+                                        audio.samples = resampled;
+                                        audio.sample_rate = target_rate;
+                                        println!("  Resampling complete: {} samples", audio.samples.len());
+                                    }
+                                    Err(e) => {
+                                        eprintln!("  Error resampling: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  Warning: Could not check supported sample rates: {}", e);
+                    }
+                }
+                
                 audio_files.push(audio);
             }
             Err(e) => {
