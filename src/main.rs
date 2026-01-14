@@ -233,6 +233,7 @@ fn main() {
     // Display progress indicator and handle keyboard input
     print!("\r");
     let mut should_exit = false;
+    let mut current_song_index = 0;
     
     loop {
         let status = player.get_status();
@@ -242,16 +243,20 @@ fn main() {
             should_exit = true;
         }
         
+        // Get current audio info for display
+        let current_audio = &audio_files[current_song_index];
+        
         // Calculate time in seconds
-        let position_seconds = status.position_samples as f32 / (status.sample_rate * first_audio.channels as u32) as f32;
-        let total_seconds = status.total_samples as f32 / (status.sample_rate * first_audio.channels as u32) as f32;
+        let position_seconds = status.position_samples as f32 / (status.sample_rate * current_audio.channels as u32) as f32;
+        let total_seconds = status.total_samples as f32 / (status.sample_rate * current_audio.channels as u32) as f32;
         
         let pos_min = (position_seconds / 60.0) as u32;
         let pos_sec = (position_seconds % 60.0) as u32;
         let total_min = (total_seconds / 60.0) as u32;
         let total_sec = (total_seconds % 60.0) as u32;
         
-        print!("\rProgress: {:02}:{:02}/{:02}:{:02} [ESC: Exit, Left/Right: Skip ±5s]  ", pos_min, pos_sec, total_min, total_sec);
+        print!("\rTrack {}/{}: {:02}:{:02}/{:02}:{:02} [ESC: Exit, ←→: Skip ±5s, ↑↓: Next/Prev]  ", 
+            current_song_index + 1, audio_files.len(), pos_min, pos_sec, total_min, total_sec);
         std::io::stdout().flush().unwrap();
         
         // Check for keyboard events (non-blocking)
@@ -265,13 +270,31 @@ fn main() {
                     }
                     KeyCode::Left => {
                         // Skip backward 5 seconds
-                        let skip_samples = (5.0 * status.sample_rate as f32 * first_audio.channels as f32) as i64;
+                        let skip_samples = (5.0 * status.sample_rate as f32 * current_audio.channels as f32) as i64;
                         player.seek(-skip_samples);
                     }
                     KeyCode::Right => {
                         // Skip forward 5 seconds
-                        let skip_samples = (5.0 * status.sample_rate as f32 * first_audio.channels as f32) as i64;
+                        let skip_samples = (5.0 * status.sample_rate as f32 * current_audio.channels as f32) as i64;
                         player.seek(skip_samples);
+                    }
+                    KeyCode::Up => {
+                        // Next song (wrap around to first)
+                        current_song_index = (current_song_index + 1) % audio_files.len();
+                        let next_audio = &audio_files[current_song_index];
+                        println!("\r\nSwitching to: {}                                ", next_audio.filename);
+                        player.switch_source(next_audio.samples.clone(), next_audio.sample_rate);
+                    }
+                    KeyCode::Down => {
+                        // Previous song (wrap around to last)
+                        current_song_index = if current_song_index == 0 {
+                            audio_files.len() - 1
+                        } else {
+                            current_song_index - 1
+                        };
+                        let prev_audio = &audio_files[current_song_index];
+                        println!("\r\nSwitching to: {}                                ", prev_audio.filename);
+                        player.switch_source(prev_audio.samples.clone(), prev_audio.sample_rate);
                     }
                     _ => {}
                 }

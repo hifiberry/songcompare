@@ -6,9 +6,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+const MIX_PERIOD: usize = 128;
+
 pub enum PlayerCommand {
     Stop,
     Seek(i64), // Seek by number of samples (positive = forward, negative = backward)
+    SwitchSource(Vec<f32>, u32), // Switch to new audio source (samples, sample_rate)
 }
 
 pub struct PlayerStatus {
@@ -16,6 +19,13 @@ pub struct PlayerStatus {
     pub total_samples: usize,
     pub sample_rate: u32,
     pub is_playing: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CrossfadeState {
+    Normal,           // Normal playback
+    WaitingToFade,   // Waiting MIX_PERIOD samples before starting fade
+    Fading(usize),   // Currently fading, tracks samples processed in fade
 }
 
 struct PlaybackState {
@@ -27,6 +37,12 @@ struct PlaybackState {
     ring_buffer_read_pos: usize,
     ring_buffer_write_pos: usize,
     ring_buffer_size: usize,
+    
+    // Crossfade support
+    next_samples: Option<Vec<f32>>,
+    next_sample_rate: Option<u32>,
+    crossfade_state: CrossfadeState,
+    crossfade_counter: usize,
 }
 
 impl PlaybackState {
@@ -43,13 +59,73 @@ impl PlaybackState {
             ring_buffer_read_pos: 0,
             ring_buffer_write_pos: 0,
             ring_buffer_size,
+            next_samples: None,
+            next_sample_rate: None,
+            crossfade_state: CrossfadeState::Normal,
+            crossfade_counter: 0,
         }
+    }
+    
+    /// Calculate crossfade mix between two samples
+    /// fade_position: 0 to MIX_PERIOD-1
+    fn mix_samples(current: f32, next: f32, fade_position: usize) -> f32 {
+        let fade_ratio = fade_position as f32 / MIX_PERIOD as f32;
+        current * (1.0 - fade_ratio) + next * fade_ratio
     }
     
     fn fill_buffer(&mut self) {
         // Fill the ring buffer from source
         while self.ring_buffer_write_pos < self.ring_buffer_size && self.position < self.samples.len() {
-            self.ring_buffer[self.ring_buffer_write_pos] = self.samples[self.position];
+            let sample = match self.crossfade_state {
+                CrossfadeState::Normal => {
+                    // Normal playback from current source
+                    self.samples[self.position]
+                }
+                CrossfadeState::WaitingToFade => {
+                    // Still playing from current source, counting down to fade
+                    self.crossfade_counter += 1;
+                    if self.crossfade_counter >= MIX_PERIOD {
+                        // Start fading
+                        self.crossfade_state = CrossfadeState::Fading(0);
+                        self.crossfade_counter = 0;
+                    }
+                    self.samples[self.position]
+                }
+                CrossfadeState::Fading(fade_pos) => {
+                    // Crossfading between sources
+                    let current_sample = self.samples[self.position];
+                    
+                    if let Some(ref next_samples) = self.next_samples {
+                        let next_sample = if self.position < next_samples.len() {
+                            next_samples[self.position]
+                        } else {
+                            0.0
+                        };
+                        
+                        let mixed = Self::mix_samples(current_sample, next_sample, fade_pos);
+                        
+                        // Update fade position
+                        let new_fade_pos = fade_pos + 1;
+                        if new_fade_pos >= MIX_PERIOD {
+                            // Fade complete, switch to new source
+                            if let Some(next_samples) = self.next_samples.take() {
+                                self.samples = next_samples;
+                            }
+                            self.crossfade_state = CrossfadeState::Normal;
+                        } else {
+                            self.crossfade_state = CrossfadeState::Fading(new_fade_pos);
+                        }
+                        
+                        mixed
+                    } else {
+                        // No next source available, just play current
+                        self.crossfade_state = CrossfadeState::Normal;
+                        current_sample
+                    }
+                }
+            };
+            
+            self.ring_buffer[self.ring_buffer_write_pos] = sample;
             self.ring_buffer_write_pos += 1;
             self.position += 1;
         }
@@ -88,6 +164,16 @@ impl PlaybackState {
     fn get_position(&self) -> usize {
         // Actual position is the source position minus buffered data
         self.position.saturating_sub(self.ring_buffer_write_pos - self.ring_buffer_read_pos)
+    }
+    
+    fn switch_source(&mut self, new_samples: Vec<f32>, _new_sample_rate: u32) {
+        // Store the new source and start the crossfade sequence
+        self.next_samples = Some(new_samples);
+        self.next_sample_rate = Some(_new_sample_rate);
+        self.crossfade_state = CrossfadeState::WaitingToFade;
+        self.crossfade_counter = 0;
+        
+        println!("Source switch initiated, will fade after {} samples", MIX_PERIOD);
     }
 }
 
@@ -235,6 +321,10 @@ impl Player {
                         let mut state = playback_state.lock().unwrap();
                         state.seek(sample_offset);
                     }
+                    PlayerCommand::SwitchSource(new_samples, new_sample_rate) => {
+                        let mut state = playback_state.lock().unwrap();
+                        state.switch_source(new_samples, new_sample_rate);
+                    }
                 }
             }
             
@@ -252,6 +342,10 @@ impl Player {
     
     pub fn seek(&self, sample_offset: i64) {
         let _ = self.command_tx.send(PlayerCommand::Seek(sample_offset));
+    }
+    
+    pub fn switch_source(&self, new_samples: Vec<f32>, new_sample_rate: u32) {
+        let _ = self.command_tx.send(PlayerCommand::SwitchSource(new_samples, new_sample_rate));
     }
     
     /// Get supported sample rates for the given number of channels
