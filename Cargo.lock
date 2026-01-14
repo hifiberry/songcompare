@@ -865,6 +865,7 @@ dependencies = [
  "glob",
  "rand",
  "rubato",
+ "rustfft",
  "symphonia",
 ]
 

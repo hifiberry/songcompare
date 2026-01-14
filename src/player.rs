@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-const MIX_PERIOD: usize = 128;
+const PRE_FADE_PERIOD: usize = 128;
 
 pub enum PlayerCommand {
     Stop,
@@ -26,7 +26,7 @@ pub struct PlayerStatus {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum CrossfadeState {
     Normal,           // Normal playback
-    WaitingToFade,   // Waiting MIX_PERIOD samples before starting fade
+    WaitingToFade,   // Waiting PRE_FADE_PERIOD samples before starting fade
     Fading(usize),   // Currently fading, tracks samples processed in fade
 }
 
@@ -46,10 +46,11 @@ struct PlaybackState {
     next_sample_rate: Option<u32>,
     crossfade_state: CrossfadeState,
     crossfade_counter: usize,
+    fade_samples: usize,
 }
 
 impl PlaybackState {
-    fn new(samples: Vec<f32>, channels: usize, sample_rate: u32) -> Self {
+    fn new(samples: Vec<f32>, channels: usize, sample_rate: u32, fade_samples: usize) -> Self {
         // Ring buffer size: 1 second of audio
         let ring_buffer_size = sample_rate as usize * channels;
         
@@ -67,13 +68,14 @@ impl PlaybackState {
             next_sample_rate: None,
             crossfade_state: CrossfadeState::Normal,
             crossfade_counter: 0,
+            fade_samples,
         }
     }
     
     /// Calculate crossfade mix between two samples
-    /// fade_position: 0 to MIX_PERIOD-1
-    fn mix_samples(current: f32, next: f32, fade_position: usize) -> f32 {
-        let fade_ratio = fade_position as f32 / MIX_PERIOD as f32;
+    /// fade_position: 0 to fade_samples-1
+    fn mix_samples(&self, current: f32, next: f32, fade_position: usize) -> f32 {
+        let fade_ratio = fade_position as f32 / self.fade_samples as f32;
         current * (1.0 - fade_ratio) + next * fade_ratio
     }
     
@@ -88,7 +90,7 @@ impl PlaybackState {
                 CrossfadeState::WaitingToFade => {
                     // Still playing from current source, counting down to fade
                     self.crossfade_counter += 1;
-                    if self.crossfade_counter >= MIX_PERIOD {
+                    if self.crossfade_counter >= PRE_FADE_PERIOD {
                         // Start fading
                         self.crossfade_state = CrossfadeState::Fading(0);
                         self.crossfade_counter = 0;
@@ -106,11 +108,11 @@ impl PlaybackState {
                             0.0
                         };
                         
-                        let mixed = Self::mix_samples(current_sample, next_sample, fade_pos);
+                        let mixed = self.mix_samples(current_sample, next_sample, fade_pos);
                         
                         // Update fade position
                         let new_fade_pos = fade_pos + 1;
-                        if new_fade_pos >= MIX_PERIOD {
+                        if new_fade_pos >= self.fade_samples {
                             // Fade complete, switch to new source
                             if let Some(next_samples) = self.next_samples.take() {
                                 self.samples = next_samples;
@@ -182,7 +184,7 @@ impl PlaybackState {
         self.crossfade_state = CrossfadeState::WaitingToFade;
         self.crossfade_counter = 0;
         
-        println!("Source switch initiated, will fade after {} samples", MIX_PERIOD);
+        println!("Source switch initiated, will fade after {} samples over {} samples", PRE_FADE_PERIOD, self.fade_samples);
     }
 }
 
@@ -194,7 +196,7 @@ pub struct Player {
 }
 
 impl Player {
-    pub fn new(samples: Vec<f32>, sample_rate: u32, channels: usize) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(samples: Vec<f32>, sample_rate: u32, channels: usize, fade_samples: usize) -> Result<Self, Box<dyn std::error::Error>> {
         let (command_tx, command_rx) = mpsc::channel();
         
         let status = Arc::new(Mutex::new(PlayerStatus {
@@ -269,7 +271,7 @@ impl Player {
             buffer_size: cpal::BufferSize::Default,
         };
         
-        let playback_state = Arc::new(Mutex::new(PlaybackState::new(samples.clone(), channels, sample_rate)));
+        let playback_state = Arc::new(Mutex::new(PlaybackState::new(samples.clone(), channels, sample_rate, fade_samples)));
         let playback_state_clone = Arc::clone(&playback_state);
         
         let stream = device.build_output_stream(

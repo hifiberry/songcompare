@@ -1,5 +1,6 @@
 mod processor;
 mod player;
+mod correlation;
 
 use std::env;
 use std::fs::File;
@@ -114,7 +115,7 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     
     if args.is_empty() {
-        eprintln!("Usage: songcompare [--normalize_db=VALUE] [--no-normalisation] [--allow-resample] [--anonymize] <audio_file1> <audio_file2> ...");
+        eprintln!("Usage: songcompare [--normalize_db=VALUE] [--no-normalisation] [--allow-resample] [--anonymize] [--fade-samples=VALUE] [--maxshift=VALUE] [--correlator=simple|gccphat|none] [--debug] <audio_file1> <audio_file2> ...");
         std::process::exit(1);
     }
     
@@ -123,6 +124,10 @@ fn main() {
     let mut no_normalisation = false;
     let mut allow_resample = false;
     let mut anonymize = false;
+    let mut fade_samples = 128usize;
+    let mut max_shift = 0usize;
+    let mut correlator_type = "gccphat".to_string();
+    let mut debug = false;
     let mut file_patterns = Vec::new();
     
     for arg in &args {
@@ -134,12 +139,37 @@ fn main() {
                     std::process::exit(1);
                 }
             }
+        } else if let Some(value_str) = arg.strip_prefix("--fade-samples=") {
+            match value_str.parse::<usize>() {
+                Ok(value) => fade_samples = value,
+                Err(_) => {
+                    eprintln!("Invalid value for --fade-samples: {}", value_str);
+                    std::process::exit(1);
+                }
+            }
+        } else if let Some(value_str) = arg.strip_prefix("--maxshift=") {
+            match value_str.parse::<usize>() {
+                Ok(value) => max_shift = value,
+                Err(_) => {
+                    eprintln!("Invalid value for --maxshift: {}", value_str);
+                    std::process::exit(1);
+                }
+            }
+        } else if let Some(value_str) = arg.strip_prefix("--correlator=") {
+            if value_str == "simple" || value_str == "gccphat" || value_str == "none" {
+                correlator_type = value_str.to_string();
+            } else {
+                eprintln!("Invalid value for --correlator: {}. Valid values are: simple, gccphat, none", value_str);
+                std::process::exit(1);
+            }
         } else if arg == "--no-normalisation" {
             no_normalisation = true;
         } else if arg == "--allow-resample" {
             allow_resample = true;
         } else if arg == "--anonymize" {
             anonymize = true;
+        } else if arg == "--debug" {
+            debug = true;
         } else {
             file_patterns.push(arg.clone());
         }
@@ -154,6 +184,12 @@ fn main() {
     
     let mut audio_files = Vec::new();
     let processor = processor::Processor::new();
+    let correlator: Box<dyn correlation::Correlator> = match correlator_type.as_str() {
+        "simple" => Box::new(correlation::SimpleCorrelator::new(debug)),
+        "gccphat" => Box::new(correlation::GccPhatCorrelator::new(debug)),
+        "none" => Box::new(correlation::NoCorrelator::new()),
+        _ => unreachable!(),
+    };
     
     if !no_normalisation {
         println!("Normalizing audio files to {} dB RMS\n", normalize_db);
@@ -233,6 +269,35 @@ fn main() {
         std::process::exit(1);
     }
     
+    // Perform audio alignment if max_shift > 0
+    if max_shift > 0 && audio_files.len() > 1 {
+        println!("\nAligning audio files to first file (max shift: {} samples)...", max_shift);
+        let reference_audio = audio_files[0].samples.clone();
+        let reference_channels = audio_files[0].channels;
+        
+        for i in 1..audio_files.len() {
+            println!("Aligning file {}: {}", i + 1, audio_files[i].filename);
+            let (shift, corr_before, corr_after) = correlator.find_best_shift(
+                &reference_audio, 
+                &audio_files[i].samples, 
+                max_shift, 
+                reference_channels
+            );
+            
+            println!("  Correlation before: {:.6}", corr_before);
+            println!("  Best shift: {} samples", shift);
+            println!("  Correlation after: {:.6}", corr_after);
+            
+            if shift != 0 {
+                audio_files[i].samples = correlator.apply_shift(&audio_files[i].samples, shift, audio_files[i].channels);
+                println!("  Applied shift");
+            } else {
+                println!("  No shift needed");
+            }
+        }
+        println!("\nAlignment complete\n");
+    }
+    
     // Create random track number mapping if anonymize is enabled
     let track_mapping: Vec<usize> = if anonymize {
         let mut indices: Vec<usize> = (0..audio_files.len()).collect();
@@ -256,6 +321,7 @@ fn main() {
         first_audio.samples.clone(),
         first_audio.sample_rate,
         first_audio.channels,
+        fade_samples,
     ) {
         Ok(p) => p,
         Err(e) => {
