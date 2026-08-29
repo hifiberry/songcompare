@@ -151,11 +151,14 @@ impl Correlator for SimpleCorrelator {
 /// Uses frequency domain processing for more robust time delay estimation
 pub struct GccPhatCorrelator {
     debug: bool,
+    min_freq: f32,
+    max_freq: f32,
+    sample_rate: u32,
 }
 
 impl GccPhatCorrelator {
-    pub fn new(debug: bool) -> Self {
-        GccPhatCorrelator { debug }
+    pub fn new(debug: bool, min_freq: f32, max_freq: f32, sample_rate: u32) -> Self {
+        GccPhatCorrelator { debug, min_freq, max_freq, sample_rate }
     }
     
     /// Calculate next power of 2 for FFT size
@@ -218,17 +221,39 @@ impl Correlator for GccPhatCorrelator {
         fft.process(&mut audio1_complex);
         fft.process(&mut audio2_complex);
         
+        // Calculate frequency resolution and min/max bins for filtering
+        let freq_resolution = self.sample_rate as f32 / fft_size as f32;
+        let min_bin = (self.min_freq / freq_resolution).floor() as usize;
+        let max_bin = (self.max_freq / freq_resolution).ceil() as usize;
+        
+        if self.debug {
+            println!("  Frequency resolution: {:.2} Hz/bin", freq_resolution);
+            println!("  Filtering frequencies below {} Hz (bin {}) and above {} Hz (bin {})", 
+                     self.min_freq, min_bin, self.max_freq, max_bin);
+        }
+        
         // Calculate cross-power spectrum with PHAT weighting
         let mut cross_spectrum: Vec<Complex<f32>> = audio1_complex.iter()
             .zip(audio2_complex.iter())
-            .map(|(a, b)| {
-                let cross = a * b.conj();
-                let magnitude = cross.norm();
-                if magnitude > 1e-10 {
-                    // PHAT weighting: normalize by magnitude (phase-only)
-                    cross / magnitude
-                } else {
+            .enumerate()
+            .map(|(i, (a, b))| {
+                // Zero out frequencies outside the [min_freq, max_freq] range
+                // Note: FFT has symmetric spectrum, so we need to preserve both positive and negative frequencies
+                let positive_freq_bin = i;
+                let negative_freq_bin = fft_size - i;
+                
+                if (positive_freq_bin < min_bin || positive_freq_bin > max_bin) && 
+                   (negative_freq_bin < min_bin || negative_freq_bin > max_bin) {
                     Complex::new(0.0, 0.0)
+                } else {
+                    let cross = a * b.conj();
+                    let magnitude = cross.norm();
+                    if magnitude > 1e-10 {
+                        // PHAT weighting: normalize by magnitude (phase-only)
+                        cross / magnitude
+                    } else {
+                        Complex::new(0.0, 0.0)
+                    }
                 }
             })
             .collect();

@@ -115,7 +115,7 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     
     if args.is_empty() {
-        eprintln!("Usage: songcompare [--normalize_db=VALUE] [--no-normalisation] [--allow-resample] [--anonymize] [--fade-samples=VALUE] [--maxshift=VALUE] [--correlator=simple|gccphat|none] [--debug] <audio_file1> <audio_file2> ...");
+        eprintln!("Usage: songcompare [--normalize_db=VALUE] [--no-normalisation] [--allow-resample] [--anonymize] [--fade-samples=VALUE] [--maxshift=VALUE] [--correlator=simple|gccphat|none] [--min-freq=VALUE] [--max-freq=VALUE] [--debug] <audio_file1> <audio_file2> ...");
         std::process::exit(1);
     }
     
@@ -128,6 +128,8 @@ fn main() {
     let mut max_shift = 0usize;
     let mut correlator_type = "gccphat".to_string();
     let mut debug = false;
+    let mut min_freq = 500.0;
+    let mut max_freq = 2000.0;
     let mut file_patterns = Vec::new();
     
     for arg in &args {
@@ -170,6 +172,22 @@ fn main() {
             anonymize = true;
         } else if arg == "--debug" {
             debug = true;
+        } else if let Some(value_str) = arg.strip_prefix("--min-freq=") {
+            match value_str.parse::<f32>() {
+                Ok(value) => min_freq = value,
+                Err(_) => {
+                    eprintln!("Invalid value for --min-freq: {}", value_str);
+                    std::process::exit(1);
+                }
+            }
+        } else if let Some(value_str) = arg.strip_prefix("--max-freq=") {
+            match value_str.parse::<f32>() {
+                Ok(value) => max_freq = value,
+                Err(_) => {
+                    eprintln!("Invalid value for --max-freq: {}", value_str);
+                    std::process::exit(1);
+                }
+            }
         } else {
             file_patterns.push(arg.clone());
         }
@@ -184,12 +202,6 @@ fn main() {
     
     let mut audio_files = Vec::new();
     let processor = processor::Processor::new();
-    let correlator: Box<dyn correlation::Correlator> = match correlator_type.as_str() {
-        "simple" => Box::new(correlation::SimpleCorrelator::new(debug)),
-        "gccphat" => Box::new(correlation::GccPhatCorrelator::new(debug)),
-        "none" => Box::new(correlation::NoCorrelator::new()),
-        _ => unreachable!(),
-    };
     
     if !no_normalisation {
         println!("Normalizing audio files to {} dB RMS\n", normalize_db);
@@ -274,6 +286,15 @@ fn main() {
         println!("\nAligning audio files to first file (max shift: {} samples)...", max_shift);
         let reference_audio = audio_files[0].samples.clone();
         let reference_channels = audio_files[0].channels;
+        let reference_sample_rate = audio_files[0].sample_rate;
+        
+        // Update correlator with sample rate for GCC-PHAT
+        let correlator: Box<dyn correlation::Correlator> = match correlator_type.as_str() {
+            "simple" => Box::new(correlation::SimpleCorrelator::new(debug)),
+            "gccphat" => Box::new(correlation::GccPhatCorrelator::new(debug, min_freq, max_freq, reference_sample_rate)),
+            "none" => Box::new(correlation::NoCorrelator::new()),
+            _ => unreachable!(),
+        };
         
         for i in 1..audio_files.len() {
             println!("Aligning file {}: {}", i + 1, audio_files[i].filename);

@@ -45,8 +45,11 @@ songcompare [OPTIONS] <audio_file1> <audio_file2> ...
 - `--allow-resample` - Allow automatic resampling if sample rate is not supported
 - `--maxshift=VALUE` - Enable audio alignment with maximum shift in samples (default: 0, disabled)
 - `--correlator=TYPE` - Correlation algorithm for alignment: `simple`, `gccphat`, or `none` (default: gccphat)
+- `--min-freq=VALUE` - Minimum frequency in Hz to use for GCC-PHAT correlation (default: 500)
+- `--max-freq=VALUE` - Maximum frequency in Hz to use for GCC-PHAT correlation (default: 2000)
 - `--fade-samples=VALUE` - Duration of crossfade in samples (default: 128)
 - `--anonymize` - Hide filenames during playback and randomize track order
+- `--debug` - Show detailed correlation information for each shift
 
 ### Keyboard Controls
 
@@ -131,11 +134,13 @@ Two correlation algorithms are available:
 - **Process**:
   - Mixes down to mono
   - Performs FFT on both signals
+  - Filters frequencies outside the range `--min-freq` to `--max-freq` (default: 500-2000 Hz)
   - Computes cross-power spectrum
   - Applies PHAT weighting (normalizes by magnitude, uses phase only)
   - Inverse FFT to get correlation function
 - **Best for**: Noisy signals, reverberant environments, robust alignment
 - **Performance**: More computationally intensive but more accurate
+- **Note**: Mid-range frequencies (500-2000 Hz) are generally most stable for alignment, avoiding both low-frequency rumble and high-frequency noise/artifacts. Adjust the frequency range based on your content.
 
 The GCC-PHAT algorithm is more robust to noise and reverberation, making it the default choice for general use.
 
