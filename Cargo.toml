@@ -1,13 +1,30 @@
 [package]
 name = "songcompare"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
+rust-version = "1.85"
+description = "Interactive A/B comparison tool for different versions of the same song, with level matching and cross-correlation alignment"
+authors = ["HiFiBerry <info@hifiberry.com>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/hifiberry/songcompare"
+homepage = "https://github.com/hifiberry/songcompare"
+keywords = ["audio", "comparison", "abx", "listening-test", "dsp"]
+categories = ["command-line-utilities", "multimedia::audio"]
+exclude = ["/.github"]
 
 [dependencies]
-symphonia = "0.5"
+# Default features cover FLAC/WAV/OGG/MKV/PCM; mpa (MP1/2/3), AAC, ALAC and the
+# MP4/M4A container are opt-in and required for the formats the README advertises.
+symphonia = { version = "0.5", features = ["mpa", "aac", "alac", "isomp4"] }
 glob = "0.3"
 cpal = "0.15"
 crossterm = "0.28"
 rubato = "0.15"
 rand = "0.8"
 rustfft = "6.2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
