@@ -391,10 +391,11 @@ impl Player {
                 let common_rates = [8000, 11025, 16000, 22050, 32000, 44100, 48000, 88200, 96000, 176400, 192000];
                 for &rate in &common_rates {
                     let rate_cpal = cpal::SampleRate(rate);
-                    if config.min_sample_rate() <= rate_cpal && config.max_sample_rate() >= rate_cpal {
-                        if !sample_rates.contains(&rate) {
-                            sample_rates.push(rate);
-                        }
+                    if config.min_sample_rate() <= rate_cpal
+                        && config.max_sample_rate() >= rate_cpal
+                        && !sample_rates.contains(&rate)
+                    {
+                        sample_rates.push(rate);
                     }
                 }
             }

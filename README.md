@@ -1,5 +1,16 @@
 # SongCompare
 
+[![CI](https://github.com/hifiberry/songcompare/actions/workflows/ci.yml/badge.svg)](https://github.com/hifiberry/songcompare/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+> **This is released as-is.** It is a tool we wrote for our own listening tests
+> and published because it might be useful to someone else. There is no support,
+> no warranty and no roadmap, and nobody is obliged to answer questions, fix
+> bugs or review changes. Issues and pull requests may sit untouched.
+>
+> It is MIT licensed, so do what you like with it: use it, change it, fork it,
+> ship it in something else. Just don't expect anything from us if it breaks.
+
 A Rust-based audio comparison tool designed for comparing different versions of the same song. Perfect for evaluating different sources (CD vs streaming), mixing/mastering variations, encoding formats (lossy vs lossless), audio filters, or any other audio processing differences.
 
 ## Use Cases
@@ -13,7 +24,7 @@ A Rust-based audio comparison tool designed for comparing different versions of 
 
 ## Features
 
-- **Multi-format Support**: Load audio files in various formats (MP3, FLAC, WAV, OGG) using Symphonia
+- **Multi-format Support**: Load audio files in various formats (MP3, AAC, ALAC, FLAC, WAV, OGG, M4A, MKV) using Symphonia
 - **Audio Normalization**: Normalize audio levels to a target RMS dB level
 - **Cross-correlation Alignment**: Automatically align audio files using cross-correlation
 - **Seamless Crossfading**: Switch between audio sources with configurable crossfade periods
@@ -26,10 +37,35 @@ A Rust-based audio comparison tool designed for comparing different versions of 
 - **Sample Rate Handling**: Automatic resampling when device doesn't support source sample rate
 - **Windows Wildcard Support**: Built-in glob pattern expansion
 
-## Building
+## Installing
+
+Requires Rust 1.85 or newer (edition 2024).
 
 ```bash
+cargo install --git https://github.com/hifiberry/songcompare
+```
+
+## Building from source
+
+```bash
+git clone https://github.com/hifiberry/songcompare
+cd songcompare
 cargo build --release
+```
+
+The binary is written to `target/release/songcompare`.
+
+On Linux, `cpal` needs the ALSA development headers:
+
+```bash
+sudo apt-get install libasound2-dev
+```
+
+## Testing
+
+```bash
+cargo test
+cargo clippy --all-targets -- -D warnings
 ```
 
 ## Usage
@@ -50,6 +86,11 @@ songcompare [OPTIONS] <audio_file1> <audio_file2> ...
 - `--fade-samples=VALUE` - Duration of crossfade in samples (default: 128)
 - `--anonymize` - Hide filenames during playback and randomize track order
 - `--debug` - Show detailed correlation information for each shift
+- `-h`, `--help` - Print usage information and exit
+- `-V`, `--version` - Print the version and exit
+
+Unrecognised options are rejected rather than being treated as filenames. To pass
+a file whose name begins with `-`, prefix it with a path (`./-song.wav`).
 
 ### Keyboard Controls
 
@@ -182,9 +223,11 @@ This is ideal for blind listening tests where you want to avoid bias.
 ## Limitations
 
 - Sample rate conversion requires `--allow-resample` flag
-- Maximum shift for alignment is limited by memory (10000 samples used for correlation)
+- Alignment correlates only the first 10000 frames of each file
 - Windows-specific wildcard expansion (Unix shells expand wildcards automatically)
 
 ## License
 
-[Add your license here]
+Released under the [MIT License](LICENSE).
+
+Copyright (c) 2026 HiFiBerry

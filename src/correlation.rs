@@ -20,7 +20,9 @@ impl Correlator for NoCorrelator {
 
 /// Trait for audio correlators that can align audio sources
 pub trait Correlator {
-    /// Find the best shift (in samples) to align audio2 with audio1
+    /// Find the best shift (in samples) to align audio2 with audio1.
+    /// The returned shift is a correction in `apply_shift`'s convention: feed it
+    /// straight to `apply_shift` to line audio2 up with audio1.
     /// Returns (shift, correlation_before, correlation_after)
     fn find_best_shift(&self, audio1: &[f32], audio2: &[f32], max_shift: usize, channels: usize) -> (i32, f32, f32);
     
@@ -32,7 +34,7 @@ pub trait Correlator {
             return samples.to_vec();
         }
         
-        let shift_samples = shift.abs() as usize;
+        let shift_samples = shift.unsigned_abs() as usize;
         let frame_shift = shift_samples / channels * channels; // Align to frame boundary
         
         if shift > 0 {
@@ -65,7 +67,7 @@ impl Correlator for SimpleCorrelator {
     
     /// Find the best shift (in samples) to align audio2 with audio1 using cross-correlation
     /// Returns (shift, correlation_before, correlation_after)
-    /// shift: the shift amount (positive means audio2 should be delayed, negative means advanced)
+    /// shift: the correction to apply (positive delays audio2, negative advances it)
     /// correlation_before: correlation at shift=0
     /// correlation_after: correlation at best shift
     /// max_shift: maximum number of samples to search in either direction
@@ -110,11 +112,10 @@ impl Correlator for SimpleCorrelator {
             let mut count = 0;
             
             // Correlate mono signals
-            for i in 0..num_frames {
+            for (i, &sample1) in audio1_mono.iter().enumerate() {
                 let idx2 = i as i32 + shift_frames;
                 
                 if idx2 >= 0 && (idx2 as usize) < audio2_mono.len() {
-                    let sample1 = audio1_mono[i];
                     let sample2 = audio2_mono[idx2 as usize];
                     correlation += sample1 * sample2;
                     audio1_energy += sample1 * sample1;
@@ -143,7 +144,11 @@ impl Correlator for SimpleCorrelator {
             }
         }
         
-        (best_shift, initial_correlation, best_correlation)
+        // The search maximises audio1[i] * audio2[i + shift], so a positive
+        // best_shift means audio2 *lags* audio1 by that much. apply_shift uses the
+        // opposite convention (positive = delay further), so negate to return the
+        // correction that actually aligns audio2 onto audio1.
+        (-best_shift, initial_correlation, best_correlation)
     }
 }
 
@@ -266,14 +271,17 @@ impl Correlator for GccPhatCorrelator {
         let mut best_correlation = f32::MIN;
         
         // Search positive shifts (delays in audio2)
-        for shift_frames in 0..=max_shift_frames.min(fft_size / 2) {
+        for (shift_frames, bin) in cross_spectrum.iter()
+            .enumerate()
+            .take(max_shift_frames.min(fft_size / 2) + 1)
+        {
             let shift_samples = shift_frames as i32 * channels as i32;
             
             // Calculate actual correlation - this is what we use to find the best shift
             let actual_corr = self.calculate_correlation(&audio1_mono, &audio2_mono, shift_frames as i32);
             
             if self.debug {
-                let fft_corr_value = cross_spectrum[shift_frames].re / fft_size as f32;
+                let fft_corr_value = bin.re / fft_size as f32;
                 println!("    Shift: {:5} samples, FFT corr: {:.6}, Actual corr: {:.6}", shift_samples, fft_corr_value, actual_corr);
             }
             
@@ -308,7 +316,9 @@ impl Correlator for GccPhatCorrelator {
         let initial_correlation = self.calculate_correlation(&audio1_mono, &audio2_mono, 0);
         let final_correlation = self.calculate_correlation(&audio1_mono, &audio2_mono, shift_frames);
         
-        (best_shift, initial_correlation, final_correlation)
+        // Negated for the same reason as in SimpleCorrelator: the search convention
+        // is the inverse of the correction apply_shift expects.
+        (-best_shift, initial_correlation, final_correlation)
     }
 }
 
@@ -320,10 +330,9 @@ impl GccPhatCorrelator {
         let mut energy2 = 0.0;
         let mut count = 0;
         
-        for i in 0..audio1.len() {
+        for (i, &s1) in audio1.iter().enumerate() {
             let idx2 = i as i32 + shift;
             if idx2 >= 0 && (idx2 as usize) < audio2.len() {
-                let s1 = audio1[i];
                 let s2 = audio2[idx2 as usize];
                 correlation += s1 * s2;
                 energy1 += s1 * s1;
@@ -337,5 +346,131 @@ impl GccPhatCorrelator {
         } else {
             0.0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `apply_shift` is a provided trait method, so any correlator exercises it.
+    fn correlator() -> NoCorrelator {
+        NoCorrelator::new()
+    }
+
+    /// Build a stereo (interleaved) ramp of `frames` frames.
+    fn stereo_ramp(frames: usize) -> Vec<f32> {
+        (0..frames * 2).map(|i| i as f32).collect()
+    }
+
+    #[test]
+    fn zero_shift_returns_the_input_unchanged() {
+        let c = correlator();
+        let samples = stereo_ramp(8);
+        assert_eq!(c.apply_shift(&samples, 0, 2), samples);
+    }
+
+    #[test]
+    fn positive_shift_prepends_silence_and_grows_the_buffer() {
+        let c = correlator();
+        let samples = stereo_ramp(4);
+        let out = c.apply_shift(&samples, 4, 2);
+        assert_eq!(out.len(), samples.len() + 4);
+        assert_eq!(&out[..4], &[0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(&out[4..], &samples[..]);
+    }
+
+    #[test]
+    fn negative_shift_trims_from_the_front() {
+        let c = correlator();
+        let samples = stereo_ramp(4);
+        let out = c.apply_shift(&samples, -4, 2);
+        assert_eq!(out.len(), samples.len() - 4);
+        assert_eq!(out, &samples[4..]);
+    }
+
+    #[test]
+    fn shifts_are_rounded_down_to_whole_frames() {
+        let c = correlator();
+        let samples = stereo_ramp(4);
+        // 3 samples on a 2-channel stream is 1.5 frames; only 1 full frame applies.
+        assert_eq!(c.apply_shift(&samples, 3, 2).len(), samples.len() + 2);
+        assert_eq!(c.apply_shift(&samples, -3, 2).len(), samples.len() - 2);
+    }
+
+    #[test]
+    fn oversized_negative_shift_yields_silence_of_the_same_length() {
+        let c = correlator();
+        let samples = stereo_ramp(4);
+        let out = c.apply_shift(&samples, -1000, 2);
+        assert_eq!(out.len(), samples.len());
+        assert!(out.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn no_correlator_never_reports_a_shift() {
+        let c = NoCorrelator::new();
+        let a = stereo_ramp(64);
+        let b = stereo_ramp(64);
+        assert_eq!(c.find_best_shift(&a, &b, 100, 2), (0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn next_power_of_2_rounds_up() {
+        assert_eq!(GccPhatCorrelator::next_power_of_2(1), 1);
+        assert_eq!(GccPhatCorrelator::next_power_of_2(5), 8);
+        assert_eq!(GccPhatCorrelator::next_power_of_2(1024), 1024);
+        assert_eq!(GccPhatCorrelator::next_power_of_2(1025), 2048);
+    }
+
+    /// A delayed copy of a signal should be detected and undone by the correlator.
+    fn assert_recovers_delay(c: &dyn Correlator, delay_frames: usize) {
+        let channels = 2;
+        let frames = 4096;
+        // Broadband-ish signal so both the time-domain and GCC-PHAT correlators
+        // have energy in the 500-2000 Hz band they look at.
+        let reference: Vec<f32> = (0..frames * channels)
+            .map(|i| {
+                let t = (i / channels) as f32;
+                (t * 0.13).sin() * 0.5 + (t * 0.41).sin() * 0.3
+            })
+            .collect();
+
+        // Delay the copy by prepending silence.
+        let mut delayed = vec![0.0f32; delay_frames * channels];
+        delayed.extend_from_slice(&reference);
+
+        let max_shift = delay_frames * channels * 4;
+        let (shift, _before, _after) =
+            c.find_best_shift(&reference, &delayed, max_shift, channels);
+
+        // The copy lags, so it must be advanced (negative shift) by the delay.
+        assert_eq!(
+            shift,
+            -((delay_frames * channels) as i32),
+            "expected the correlator to recover a {}-frame delay",
+            delay_frames
+        );
+
+        // Applying the shift should line the two signals back up.
+        let aligned = c.apply_shift(&delayed, shift, channels);
+        let n = reference.len().min(aligned.len());
+        assert!(
+            reference[..n]
+                .iter()
+                .zip(&aligned[..n])
+                .all(|(a, b)| (a - b).abs() < 1e-6),
+            "aligned signal does not match the reference"
+        );
+    }
+
+    #[test]
+    fn simple_correlator_recovers_a_known_delay() {
+        assert_recovers_delay(&SimpleCorrelator::new(false), 37);
+    }
+
+    #[test]
+    fn gcc_phat_correlator_recovers_a_known_delay() {
+        assert_recovers_delay(&GccPhatCorrelator::new(false, 500.0, 2000.0, 44_100), 37);
     }
 }

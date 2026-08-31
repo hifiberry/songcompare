@@ -116,11 +116,109 @@ impl Processor {
         let mut output = Vec::with_capacity(output_frames * channels);
         
         for frame in 0..output_frames {
-            for channel in 0..channels {
-                output.push(resampled_channels[channel][frame]);
+            for channel in resampled_channels.iter() {
+                output.push(channel[frame]);
             }
         }
         
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Relative tolerance used when comparing floating point audio levels.
+    const EPS: f32 = 1e-5;
+
+    #[test]
+    fn max_level_of_empty_input_is_zero() {
+        let p = Processor::new();
+        assert_eq!(p.calculate_max_level(&[]), 0.0);
+    }
+
+    #[test]
+    fn max_level_uses_absolute_value() {
+        let p = Processor::new();
+        assert!((p.calculate_max_level(&[0.1, -0.8, 0.3]) - 0.8).abs() < EPS);
+    }
+
+    #[test]
+    fn rms_of_empty_input_is_zero() {
+        let p = Processor::new();
+        assert_eq!(p.calculate_rms_level(&[]), 0.0);
+    }
+
+    #[test]
+    fn rms_of_constant_signal_is_that_constant() {
+        let p = Processor::new();
+        assert!((p.calculate_rms_level(&[0.5; 128]) - 0.5).abs() < EPS);
+    }
+
+    #[test]
+    fn rms_of_square_wave_is_amplitude() {
+        let p = Processor::new();
+        let samples: Vec<f32> = (0..128)
+            .map(|i| if i % 2 == 0 { 0.25 } else { -0.25 })
+            .collect();
+        assert!((p.calculate_rms_level(&samples) - 0.25).abs() < EPS);
+    }
+
+    #[test]
+    fn level_to_db_maps_unity_to_zero() {
+        assert!(Processor::level_to_db(1.0).abs() < EPS);
+    }
+
+    #[test]
+    fn level_to_db_halving_is_about_minus_six() {
+        assert!((Processor::level_to_db(0.5) + 6.0206).abs() < 1e-3);
+    }
+
+    #[test]
+    fn level_to_db_clamps_silence() {
+        assert_eq!(Processor::level_to_db(0.0), -100.0);
+        assert_eq!(Processor::level_to_db(-1.0), -100.0);
+    }
+
+    #[test]
+    fn normalize_scales_to_target_rms() {
+        let p = Processor::new();
+        let out = p.normalize_to_rms(&[0.1; 64], 0.5);
+        assert!((p.calculate_rms_level(&out) - 0.5).abs() < EPS);
+    }
+
+    #[test]
+    fn normalize_leaves_silence_untouched() {
+        let p = Processor::new();
+        let out = p.normalize_to_rms(&[0.0; 32], 0.5);
+        assert!(out.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn normalize_db_hits_the_requested_level() {
+        let p = Processor::new();
+        let samples: Vec<f32> = (0..1024).map(|i| (i as f32 * 0.01).sin()).collect();
+        let out = p.normalize_to_rms_db(&samples, -20.0);
+        let db = Processor::level_to_db(p.calculate_rms_level(&out));
+        assert!((db + 20.0).abs() < 1e-3, "got {} dB", db);
+    }
+
+    #[test]
+    fn normalize_preserves_sample_count_and_shape() {
+        let p = Processor::new();
+        let samples = vec![0.2, -0.4, 0.6, -0.8];
+        let out = p.normalize_to_rms_db(&samples, -10.0);
+        assert_eq!(out.len(), samples.len());
+        // Gain is uniform, so the ratio between any two samples is unchanged.
+        assert!((out[1] / out[0] - samples[1] / samples[0]).abs() < EPS);
+    }
+
+    #[test]
+    fn resample_is_a_no_op_when_rates_match() {
+        let p = Processor::new();
+        let samples = vec![0.1, 0.2, 0.3, 0.4];
+        let out = p.resample(&samples, 48_000, 48_000, 2).unwrap();
+        assert_eq!(out, samples);
     }
 }
