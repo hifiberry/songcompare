@@ -12,7 +12,13 @@ impl NoCorrelator {
 }
 
 impl Correlator for NoCorrelator {
-    fn find_best_shift(&self, _audio1: &[f32], _audio2: &[f32], _max_shift: usize, _channels: usize) -> (i32, f32, f32) {
+    fn find_best_shift(
+        &self,
+        _audio1: &[f32],
+        _audio2: &[f32],
+        _max_shift: usize,
+        _channels: usize,
+    ) -> (i32, f32, f32) {
         // No correlation or shifting
         (0, 0.0, 0.0)
     }
@@ -24,8 +30,14 @@ pub trait Correlator {
     /// The returned shift is a correction in `apply_shift`'s convention: feed it
     /// straight to `apply_shift` to line audio2 up with audio1.
     /// Returns (shift, correlation_before, correlation_after)
-    fn find_best_shift(&self, audio1: &[f32], audio2: &[f32], max_shift: usize, channels: usize) -> (i32, f32, f32);
-    
+    fn find_best_shift(
+        &self,
+        audio1: &[f32],
+        audio2: &[f32],
+        max_shift: usize,
+        channels: usize,
+    ) -> (i32, f32, f32);
+
     /// Apply a shift to audio samples by adding silence or trimming
     /// Positive shift delays the audio (adds silence at beginning)
     /// Negative shift advances the audio (trims from beginning)
@@ -33,10 +45,10 @@ pub trait Correlator {
         if shift == 0 {
             return samples.to_vec();
         }
-        
+
         let shift_samples = shift.unsigned_abs() as usize;
         let frame_shift = shift_samples / channels * channels; // Align to frame boundary
-        
+
         if shift > 0 {
             // Delay: add silence at the beginning
             let mut result = vec![0.0; frame_shift];
@@ -64,7 +76,6 @@ impl SimpleCorrelator {
 }
 
 impl Correlator for SimpleCorrelator {
-    
     /// Find the best shift (in samples) to align audio2 with audio1 using cross-correlation
     /// Returns (shift, correlation_before, correlation_after)
     /// shift: the correction to apply (positive delays audio2, negative advances it)
@@ -72,21 +83,30 @@ impl Correlator for SimpleCorrelator {
     /// correlation_after: correlation at best shift
     /// max_shift: maximum number of samples to search in either direction
     /// channels: number of audio channels (for proper frame alignment)
-    fn find_best_shift(&self, audio1: &[f32], audio2: &[f32], max_shift: usize, channels: usize) -> (i32, f32, f32) {
+    fn find_best_shift(
+        &self,
+        audio1: &[f32],
+        audio2: &[f32],
+        max_shift: usize,
+        channels: usize,
+    ) -> (i32, f32, f32) {
         // Convert max_shift to frames to ensure we shift by complete frames
         let max_shift_frames = max_shift / channels;
         let max_shift_samples = max_shift_frames * channels;
-        
+
         let compare_frames = 10000; // Compare first 10000 frames
         let num_frames = (audio1.len().min(audio2.len()) / channels).min(compare_frames);
-        
-        println!("  Finding best alignment (max shift: ±{} samples, {} frames)...", max_shift_samples, max_shift_frames);
+
+        println!(
+            "  Finding best alignment (max shift: ±{} samples, {} frames)...",
+            max_shift_samples, max_shift_frames
+        );
         println!("  Mixing down to mono for correlation...");
-        
+
         // Mix down to mono for correlation
         let mut audio1_mono = Vec::with_capacity(num_frames);
         let mut audio2_mono = Vec::with_capacity(num_frames);
-        
+
         for frame in 0..num_frames {
             let mut sum1 = 0.0;
             let mut sum2 = 0.0;
@@ -97,24 +117,24 @@ impl Correlator for SimpleCorrelator {
             audio1_mono.push(sum1 / channels as f32);
             audio2_mono.push(sum2 / channels as f32);
         }
-        
+
         let mut best_shift = 0;
         let mut best_correlation = f32::MIN;
         let mut initial_correlation = 0.0;
-        
+
         // Try different shifts (by frame)
         for shift_frames in -(max_shift_frames as i32)..=(max_shift_frames as i32) {
             let shift_samples = shift_frames * channels as i32;
-            
+
             let mut correlation = 0.0;
             let mut audio1_energy = 0.0;
             let mut audio2_energy = 0.0;
             let mut count = 0;
-            
+
             // Correlate mono signals
             for (i, &sample1) in audio1_mono.iter().enumerate() {
                 let idx2 = i as i32 + shift_frames;
-                
+
                 if idx2 >= 0 && (idx2 as usize) < audio2_mono.len() {
                     let sample2 = audio2_mono[idx2 as usize];
                     correlation += sample1 * sample2;
@@ -123,27 +143,30 @@ impl Correlator for SimpleCorrelator {
                     count += 1;
                 }
             }
-            
+
             if count > 0 && audio1_energy > 0.0 && audio2_energy > 0.0 {
                 // Normalize correlation coefficient (Pearson correlation)
                 let normalized_corr = correlation / (audio1_energy * audio2_energy).sqrt();
-                
+
                 if self.debug {
-                    println!("    Shift: {:5} samples, Correlation: {:.6}", shift_samples, normalized_corr);
+                    println!(
+                        "    Shift: {:5} samples, Correlation: {:.6}",
+                        shift_samples, normalized_corr
+                    );
                 }
-                
+
                 // Store initial correlation (at shift=0)
                 if shift_frames == 0 {
                     initial_correlation = normalized_corr;
                 }
-                
+
                 if normalized_corr > best_correlation {
                     best_correlation = normalized_corr;
                     best_shift = shift_samples;
                 }
             }
         }
-        
+
         // The search maximises audio1[i] * audio2[i + shift], so a positive
         // best_shift means audio2 *lags* audio1 by that much. apply_shift uses the
         // opposite convention (positive = delay further), so negate to return the
@@ -163,9 +186,14 @@ pub struct GccPhatCorrelator {
 
 impl GccPhatCorrelator {
     pub fn new(debug: bool, min_freq: f32, max_freq: f32, sample_rate: u32) -> Self {
-        GccPhatCorrelator { debug, min_freq, max_freq, sample_rate }
+        GccPhatCorrelator {
+            debug,
+            min_freq,
+            max_freq,
+            sample_rate,
+        }
     }
-    
+
     /// Calculate next power of 2 for FFT size
     fn next_power_of_2(n: usize) -> usize {
         let mut p = 1;
@@ -177,20 +205,29 @@ impl GccPhatCorrelator {
 }
 
 impl Correlator for GccPhatCorrelator {
-    fn find_best_shift(&self, audio1: &[f32], audio2: &[f32], max_shift: usize, channels: usize) -> (i32, f32, f32) {
+    fn find_best_shift(
+        &self,
+        audio1: &[f32],
+        audio2: &[f32],
+        max_shift: usize,
+        channels: usize,
+    ) -> (i32, f32, f32) {
         let max_shift_frames = max_shift / channels;
         let max_shift_samples = max_shift_frames * channels;
-        
+
         let compare_frames = 10000;
         let num_frames = (audio1.len().min(audio2.len()) / channels).min(compare_frames);
-        
-        println!("  Finding best alignment using GCC-PHAT (max shift: ±{} samples, {} frames)...", max_shift_samples, max_shift_frames);
+
+        println!(
+            "  Finding best alignment using GCC-PHAT (max shift: ±{} samples, {} frames)...",
+            max_shift_samples, max_shift_frames
+        );
         println!("  Mixing down to mono for correlation...");
-        
+
         // Mix down to mono
         let mut audio1_mono = Vec::with_capacity(num_frames);
         let mut audio2_mono = Vec::with_capacity(num_frames);
-        
+
         for frame in 0..num_frames {
             let mut sum1 = 0.0;
             let mut sum2 = 0.0;
@@ -201,44 +238,45 @@ impl Correlator for GccPhatCorrelator {
             audio1_mono.push(sum1 / channels as f32);
             audio2_mono.push(sum2 / channels as f32);
         }
-        
+
         // Pad to next power of 2 for efficient FFT
         let fft_size = Self::next_power_of_2(num_frames + max_shift_frames * 2);
         println!("  Using FFT size: {}", fft_size);
-        
+
         // Prepare FFT planner
         let mut planner = FftPlanner::new();
         let fft = planner.plan_fft_forward(fft_size);
         let ifft = planner.plan_fft_inverse(fft_size);
-        
+
         // Convert to complex and pad
-        let mut audio1_complex: Vec<Complex<f32>> = audio1_mono.iter()
-            .map(|&x| Complex::new(x, 0.0))
-            .collect();
+        let mut audio1_complex: Vec<Complex<f32>> =
+            audio1_mono.iter().map(|&x| Complex::new(x, 0.0)).collect();
         audio1_complex.resize(fft_size, Complex::new(0.0, 0.0));
-        
-        let mut audio2_complex: Vec<Complex<f32>> = audio2_mono.iter()
-            .map(|&x| Complex::new(x, 0.0))
-            .collect();
+
+        let mut audio2_complex: Vec<Complex<f32>> =
+            audio2_mono.iter().map(|&x| Complex::new(x, 0.0)).collect();
         audio2_complex.resize(fft_size, Complex::new(0.0, 0.0));
-        
+
         // Perform FFT on both signals
         fft.process(&mut audio1_complex);
         fft.process(&mut audio2_complex);
-        
+
         // Calculate frequency resolution and min/max bins for filtering
         let freq_resolution = self.sample_rate as f32 / fft_size as f32;
         let min_bin = (self.min_freq / freq_resolution).floor() as usize;
         let max_bin = (self.max_freq / freq_resolution).ceil() as usize;
-        
+
         if self.debug {
             println!("  Frequency resolution: {:.2} Hz/bin", freq_resolution);
-            println!("  Filtering frequencies below {} Hz (bin {}) and above {} Hz (bin {})", 
-                     self.min_freq, min_bin, self.max_freq, max_bin);
+            println!(
+                "  Filtering frequencies below {} Hz (bin {}) and above {} Hz (bin {})",
+                self.min_freq, min_bin, self.max_freq, max_bin
+            );
         }
-        
+
         // Calculate cross-power spectrum with PHAT weighting
-        let mut cross_spectrum: Vec<Complex<f32>> = audio1_complex.iter()
+        let mut cross_spectrum: Vec<Complex<f32>> = audio1_complex
+            .iter()
             .zip(audio2_complex.iter())
             .enumerate()
             .map(|(i, (a, b))| {
@@ -246,9 +284,10 @@ impl Correlator for GccPhatCorrelator {
                 // Note: FFT has symmetric spectrum, so we need to preserve both positive and negative frequencies
                 let positive_freq_bin = i;
                 let negative_freq_bin = fft_size - i;
-                
-                if (positive_freq_bin < min_bin || positive_freq_bin > max_bin) && 
-                   (negative_freq_bin < min_bin || negative_freq_bin > max_bin) {
+
+                if (positive_freq_bin < min_bin || positive_freq_bin > max_bin)
+                    && (negative_freq_bin < min_bin || negative_freq_bin > max_bin)
+                {
                     Complex::new(0.0, 0.0)
                 } else {
                     let cross = a * b.conj();
@@ -262,60 +301,70 @@ impl Correlator for GccPhatCorrelator {
                 }
             })
             .collect();
-        
+
         // Inverse FFT to get correlation
         ifft.process(&mut cross_spectrum);
-        
+
         // Find the peak in correlation (searching within max_shift range)
         let mut best_shift = 0;
         let mut best_correlation = f32::MIN;
-        
+
         // Search positive shifts (delays in audio2)
-        for (shift_frames, bin) in cross_spectrum.iter()
+        for (shift_frames, bin) in cross_spectrum
+            .iter()
             .enumerate()
             .take(max_shift_frames.min(fft_size / 2) + 1)
         {
             let shift_samples = shift_frames as i32 * channels as i32;
-            
+
             // Calculate actual correlation - this is what we use to find the best shift
-            let actual_corr = self.calculate_correlation(&audio1_mono, &audio2_mono, shift_frames as i32);
-            
+            let actual_corr =
+                self.calculate_correlation(&audio1_mono, &audio2_mono, shift_frames as i32);
+
             if self.debug {
                 let fft_corr_value = bin.re / fft_size as f32;
-                println!("    Shift: {:5} samples, FFT corr: {:.6}, Actual corr: {:.6}", shift_samples, fft_corr_value, actual_corr);
+                println!(
+                    "    Shift: {:5} samples, FFT corr: {:.6}, Actual corr: {:.6}",
+                    shift_samples, fft_corr_value, actual_corr
+                );
             }
-            
+
             if actual_corr > best_correlation {
                 best_correlation = actual_corr;
                 best_shift = shift_samples;
             }
         }
-        
+
         // Search negative shifts (advances in audio2) - appear at end of FFT result
         for shift_frames in 1..=max_shift_frames.min(fft_size / 2) {
             let idx = fft_size - shift_frames;
             let shift_samples = -(shift_frames as i32) * channels as i32;
-            
+
             // Calculate actual correlation - this is what we use to find the best shift
-            let actual_corr = self.calculate_correlation(&audio1_mono, &audio2_mono, -(shift_frames as i32));
-            
+            let actual_corr =
+                self.calculate_correlation(&audio1_mono, &audio2_mono, -(shift_frames as i32));
+
             if self.debug {
                 let fft_corr_value = cross_spectrum[idx].re / fft_size as f32;
-                println!("    Shift: {:5} samples, FFT corr: {:.6}, Actual corr: {:.6}", shift_samples, fft_corr_value, actual_corr);
+                println!(
+                    "    Shift: {:5} samples, FFT corr: {:.6}, Actual corr: {:.6}",
+                    shift_samples, fft_corr_value, actual_corr
+                );
             }
-            
+
             if actual_corr > best_correlation {
                 best_correlation = actual_corr;
                 best_shift = shift_samples;
             }
         }
-        
+
         // Calculate correlations at shift=0 and at the best shift
         // Both use the overlapping samples for fair comparison
         let shift_frames = best_shift / channels as i32;
         let initial_correlation = self.calculate_correlation(&audio1_mono, &audio2_mono, 0);
-        let final_correlation = self.calculate_correlation(&audio1_mono, &audio2_mono, shift_frames);
-        
+        let final_correlation =
+            self.calculate_correlation(&audio1_mono, &audio2_mono, shift_frames);
+
         // Negated for the same reason as in SimpleCorrelator: the search convention
         // is the inverse of the correction apply_shift expects.
         (-best_shift, initial_correlation, final_correlation)
@@ -329,7 +378,7 @@ impl GccPhatCorrelator {
         let mut energy1 = 0.0;
         let mut energy2 = 0.0;
         let mut count = 0;
-        
+
         for (i, &s1) in audio1.iter().enumerate() {
             let idx2 = i as i32 + shift;
             if idx2 >= 0 && (idx2 as usize) < audio2.len() {
@@ -340,7 +389,7 @@ impl GccPhatCorrelator {
                 count += 1;
             }
         }
-        
+
         if count > 0 && energy1 > 0.0 && energy2 > 0.0 {
             correlation / (energy1 * energy2).sqrt()
         } else {
@@ -441,8 +490,7 @@ mod tests {
         delayed.extend_from_slice(&reference);
 
         let max_shift = delay_frames * channels * 4;
-        let (shift, _before, _after) =
-            c.find_best_shift(&reference, &delayed, max_shift, channels);
+        let (shift, _before, _after) = c.find_best_shift(&reference, &delayed, max_shift, channels);
 
         // The copy lags, so it must be advanced (negative shift) by the delay.
         assert_eq!(
