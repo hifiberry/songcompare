@@ -505,10 +505,20 @@ fn main() {
         }
         std::io::stdout().flush().unwrap();
 
-        // Check for keyboard events (non-blocking)
-        if event::poll(Duration::from_millis(100)).unwrap()
-            && let Event::Key(key_event) = event::read().unwrap()
-        {
+        // Check for keyboard events (non-blocking).
+        //
+        // Deliberately not a let-chain: those are stable only from Rust 1.88,
+        // and Cargo.toml declares 1.85 as the minimum -- which is what Debian
+        // trixie ships, so a let-chain here makes the package unbuildable
+        // there.
+        let mut key_event = None;
+        if event::poll(Duration::from_millis(100)).unwrap() {
+            let event = event::read().unwrap();
+            if let Event::Key(event) = event {
+                key_event = Some(event);
+            }
+        }
+        if let Some(key_event) = key_event {
             // Only process KeyPress events, ignore KeyRepeat and KeyRelease
             if key_event.kind == KeyEventKind::Press {
                 // Debounce for navigation keys
