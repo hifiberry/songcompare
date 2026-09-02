@@ -1,6 +1,6 @@
 [package]
 name = "songcompare"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Interactive A/B comparison tool for different versions of the same song, with level matching and cross-correlation alignment"
@@ -11,7 +11,7 @@ repository = "https://github.com/hifiberry/songcompare"
 homepage = "https://github.com/hifiberry/songcompare"
 keywords = ["audio", "comparison", "abx", "listening-test", "dsp"]
 categories = ["command-line-utilities", "multimedia::audio"]
-exclude = ["/.github"]
+exclude = ["/.github", "/debian"]
 
 [dependencies]
 # Default features cover FLAC/WAV/OGG/MKV/PCM; mpa (MP1/2/3), AAC, ALAC and the

@@ -1,0 +1,13 @@
+hifiberry-songcompare (1.0.1) stable; urgency=medium
+
+  * Debian packaging. Builds the release binary and installs it as
+    /usr/bin/songcompare; the package is named hifiberry-songcompare to match
+    the rest of the HiFiBerry OS repository.
+  * Build with the Rust 1.85 that Cargo.toml declares as the minimum. A let
+    chain in the key-event loop is stable only from 1.88, so every toolchain
+    between the two failed to compile the crate -- Debian trixie's 1.85.0
+    among them, which is what this package is built with.
+  * The unit tests run as part of the package build, so a broken build is
+    caught where the .deb is made rather than only in CI.
+
+ -- HiFiBerry <info@hifiberry.com>  Wed, 02 Sep 2026 08:30:24 +0000

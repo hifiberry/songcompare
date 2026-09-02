@@ -1,0 +1,31 @@
+Source: hifiberry-songcompare
+Section: sound
+Priority: optional
+Maintainer: HiFiBerry <info@hifiberry.com>
+Build-Depends: debhelper-compat (= 13),
+               cargo,
+               rustc (>= 1.85),
+               pkg-config,
+               libasound2-dev,
+               ca-certificates
+Standards-Version: 4.6.0
+Homepage: https://github.com/hifiberry/songcompare
+Vcs-Git: https://github.com/hifiberry/songcompare.git
+Vcs-Browser: https://github.com/hifiberry/songcompare
+
+Package: hifiberry-songcompare
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: interactive A/B comparison tool for versions of the same song
+ SongCompare plays two or more renderings of the same recording and switches
+ between them on a keypress, crossfading so the switch itself is inaudible.
+ It is meant for listening tests: lossy against lossless, one master against
+ another, a filter or EQ change against the unprocessed source.
+ .
+ Before playback it levels the files to a common RMS target and, on request,
+ aligns them by cross-correlation, so that what is left to hear is the
+ difference under test rather than a loudness or timing offset. An anonymous
+ mode hides the filenames and shuffles the order until the comparison is over.
+ .
+ Reads MP3, AAC, ALAC, FLAC, WAV, OGG, M4A and MKV via Symphonia, and resamples
+ when the output device does not support the source rate.
