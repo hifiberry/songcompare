@@ -1,7 +1,5 @@
 #!/usr/bin/make -f
 
-export DEB_BUILD_MAINT_OPTIONS = hardening=+all noautodbgsym
-
 # Cargo must not write outside the build tree: the sbuild chroot has no home
 # directory worth persisting, and a shared ~/.cargo would leak between builds.
 export CARGO_HOME = $(CURDIR)/debian/cargo
@@ -23,3 +21,11 @@ override_dh_auto_test:
 override_dh_auto_install:
 	install -D -m 0755 target/release/songcompare \
 		debian/hifiberry-songcompare/usr/bin/songcompare
+
+# [profile.release] strip = true means there are no symbols for a -dbgsym
+# package to carry. Said here because this is where debhelper reads it:
+# noautodbgsym is a DEB_BUILD_OPTIONS value, so setting it in
+# DEB_BUILD_MAINT_OPTIONS -- which takes dpkg-buildflags feature areas -- looks
+# like it suppresses the package and does nothing at all.
+override_dh_strip:
+	dh_strip --no-automatic-dbgsym
