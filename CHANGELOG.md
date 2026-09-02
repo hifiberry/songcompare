@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-09-02
+
+### Added
+
+- Debian packaging (`debian/`), producing a `hifiberry-songcompare` package
+  that installs `/usr/bin/songcompare`. The build runs the unit tests, so a
+  broken tree fails where the `.deb` is made and not only in CI.
+
+### Fixed
+
+- The crate did not build on the Rust 1.85 that `Cargo.toml` declares as its
+  minimum. A `let` chain in the key-event loop is stable only from 1.88, so
+  every toolchain between the declared minimum and 1.88 failed with
+  `error[E0658]: 'let' expressions in this position are unstable` — Debian
+  trixie's 1.85.0 among them, which is what the package is built with. CI
+  tests only against current stable and so never saw it.
+
 ## [1.0.0] - 2026-08-31
 
 First public release.
@@ -30,4 +47,5 @@ First public release.
 - A panic during playback left the terminal in raw mode and the shell unusable.
   Raw mode is now restored from a panic hook.
 
+[1.0.1]: https://github.com/hifiberry/songcompare/releases/tag/v1.0.1
 [1.0.0]: https://github.com/hifiberry/songcompare/releases/tag/v1.0.0

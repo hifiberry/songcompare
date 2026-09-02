@@ -45,6 +45,20 @@ Requires Rust 1.85 or newer (edition 2024).
 cargo install --git https://github.com/hifiberry/songcompare
 ```
 
+### Debian package
+
+The repository carries its own `debian/` directory, so a `.deb` can be built
+from a checkout on a Debian system:
+
+```bash
+sudo apt-get install build-essential debhelper cargo libasound2-dev pkg-config
+dpkg-buildpackage -us -uc -b
+```
+
+The binary package is named `hifiberry-songcompare` and installs
+`/usr/bin/songcompare`. HiFiBerry OS builds it from this repository and
+publishes it to the HiFiBerry apt repository.
+
 ## Building from source
 
 ```bash
